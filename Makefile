@@ -2,11 +2,12 @@
 
 COMPOSE ?= docker compose
 IMAGE   ?= miner-api
+SQLC    ?= sqlc/sqlc:1.30.0
 
-.PHONY: help up down reset logs ps psql test fmt lint build
+.PHONY: help up down reset logs ps psql migrate migrate-down sqlc test test-integration fmt lint build
 
 help: ## List available targets
-	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-8s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
 
 up: ## Build and start the api and postgres in the background
 	$(COMPOSE) up -d --build
@@ -26,8 +27,23 @@ ps: ## Show the stack status
 psql: ## Open a psql shell in the database
 	$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
+migrate: ## Apply pending database migrations
+	$(COMPOSE) run --rm migrate go run ./cmd/migrate up
+
+migrate-down: ## Roll back the last database migration
+	$(COMPOSE) run --rm migrate go run ./cmd/migrate down
+
+sqlc: ## Regenerate the database code from internal/task/postgres/queries
+	docker run --rm -u "$$(id -u):$$(id -g)" -v "$(CURDIR):/src" -w /src $(SQLC) generate
+
 test: ## Run the Go tests
 	go test ./...
+
+test-integration: ## Run every test, including integration, against the compose postgres and rabbitmq
+	$(COMPOSE) up -d --wait postgres rabbitmq
+	$(COMPOSE) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc "SELECT 1 FROM pg_database WHERE datname = '"'"'miner_test'"'"'" | grep -q 1 || createdb -U "$$POSTGRES_USER" miner_test'
+	$(COMPOSE) exec -T rabbitmq sh -c 'rabbitmqctl -q list_vhosts | grep -qx miner_test || rabbitmqctl -q add_vhost miner_test; rabbitmqctl -q set_permissions -p miner_test "$$RABBITMQ_DEFAULT_USER" ".*" ".*" ".*"'
+	$(COMPOSE) run --rm test
 
 fmt: ## Format and vet the code
 	gofmt -l -w .
