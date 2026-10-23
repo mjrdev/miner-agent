@@ -20,11 +20,14 @@ const (
 
 // Config holds every setting the service reads at startup.
 type Config struct {
-	AppEnv          string
-	HTTPPort        int
-	LogLevel        slog.Level
-	DatabaseURL     string
-	ShutdownTimeout time.Duration
+	AppEnv      string
+	HTTPPort    int
+	LogLevel    slog.Level
+	DatabaseURL string
+	RabbitMQURL string
+	// LocalWebhookToken authenticates POST /webhooks/local; empty rejects every request.
+	LocalWebhookToken string
+	ShutdownTimeout   time.Duration
 }
 
 // Load reads the configuration from the process environment.
@@ -68,6 +71,13 @@ func load(getenv func(string) string) (Config, error) {
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL: required"))
 	}
+
+	cfg.RabbitMQURL = getenv("RABBITMQ_URL")
+	if cfg.RabbitMQURL == "" {
+		errs = append(errs, errors.New("RABBITMQ_URL: required"))
+	}
+
+	cfg.LocalWebhookToken = getenv("LOCAL_WEBHOOK_TOKEN")
 
 	if v := getenv("SHUTDOWN_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)

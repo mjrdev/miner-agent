@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jrgomesdev/miner/internal/database"
 	"github.com/jrgomesdev/miner/internal/handler"
 )
 
@@ -23,7 +24,7 @@ func discardLogger() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Disca
 
 func TestRouterUnknownRoutesAndMethods(t *testing.T) {
 	log := discardLogger()
-	router := NewRouter(handler.NewHealth(okPinger{}, log), log)
+	router := NewRouter(log, handler.NewHealth(map[string]database.Pinger{"database": okPinger{}}, log))
 
 	tests := []struct {
 		method, path string
