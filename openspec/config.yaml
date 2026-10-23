@@ -30,3 +30,8 @@ schema: spec-driven
 #     archive:
 #       guidance:
 #         - Summarize the archive outcome before finishing
+
+operations:
+  archive:
+    guidance:
+      - After the change is moved to the archive, follow the spec-git-flow skill (Phase 2) to commit, push the spec/<change-name> branch and open the PR to main
