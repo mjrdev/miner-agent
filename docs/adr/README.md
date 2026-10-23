@@ -33,3 +33,7 @@ ADRs aceitos não são reescritos. Para mudar uma decisão, crie um ADR novo que
 | [0006](0006-postgresql-com-pgx-v5-e-conexao-com-retry.md) | PostgreSQL com `pgx/v5` e conexão com retry | Aceito | 2026-10-22 |
 | [0007](0007-ambiente-de-desenvolvimento-com-docker-compose-e-hot-reload.md) | Ambiente de desenvolvimento com Docker Compose e hot reload com `air` | Aceito | 2026-10-22 |
 | [0008](0008-postgresql-17-no-compose-com-a-porta-5433-no-host.md) | PostgreSQL 17 no compose com a porta 5433 no host | Aceito | 2026-10-22 |
+| [0009](0009-dominio-task-em-internal-task-com-subpacotes.md) | Domínio Task em `internal/task` com subpacotes | Aceito | 2026-10-22 |
+| [0010](0010-rabbitmq-com-quorum-queue-e-dlq-para-a-ingestao-de-tasks.md) | RabbitMQ com quorum queue e DLQ para a ingestão de tasks | Aceito | 2026-10-22 |
+| [0011](0011-acesso-ao-banco-com-codigo-gerado-pelo-sqlc.md) | Acesso ao banco com código gerado pelo sqlc | Aceito | 2026-10-22 |
+| [0012](0012-migracoes-com-goose-e-servico-migrate-no-compose.md) | Migrações com goose e serviço `migrate` no compose | Aceito | 2026-10-22 |
