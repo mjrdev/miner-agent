@@ -3,15 +3,20 @@ package server
 import (
 	"log/slog"
 	"net/http"
-
-	"github.com/jrgomesdev/miner/internal/handler"
 )
 
-// NewRouter registers every route and wraps them with the common middleware.
-func NewRouter(health *handler.Health, log *slog.Logger) http.Handler {
+// Routes registers a group of routes on the router.
+type Routes interface {
+	Register(mux *http.ServeMux)
+}
+
+// NewRouter registers every route group and wraps them with the common
+// middleware.
+func NewRouter(log *slog.Logger, groups ...Routes) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", health.Liveness)
-	mux.HandleFunc("GET /readyz", health.Readiness)
+	for _, g := range groups {
+		g.Register(mux)
+	}
 
 	// Logging is outermost so recovered panics are logged with their 500 status.
 	return logRequests(log, recoverPanics(log, mux))

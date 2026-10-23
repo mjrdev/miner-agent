@@ -8,7 +8,10 @@ import (
 )
 
 func TestLoad(t *testing.T) {
-	const dbURL = "postgres://u:p@localhost:5432/db"
+	const (
+		dbURL = "postgres://u:p@localhost:5432/db"
+		mqURL = "amqp://u:p@localhost:5672/"
+	)
 
 	tests := []struct {
 		name    string
@@ -18,55 +21,65 @@ func TestLoad(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			env:  map[string]string{"DATABASE_URL": dbURL},
+			env:  map[string]string{"DATABASE_URL": dbURL, "RABBITMQ_URL": mqURL},
 			want: Config{
 				AppEnv:          "development",
 				HTTPPort:        8080,
 				LogLevel:        slog.LevelInfo,
 				DatabaseURL:     dbURL,
+				RabbitMQURL:     mqURL,
 				ShutdownTimeout: 10 * time.Second,
 			},
 		},
 		{
 			name: "custom values",
 			env: map[string]string{
-				"APP_ENV":          "staging",
-				"HTTP_PORT":        "9090",
-				"LOG_LEVEL":        "WARN",
-				"DATABASE_URL":     dbURL,
-				"SHUTDOWN_TIMEOUT": "3s",
+				"APP_ENV":             "staging",
+				"HTTP_PORT":           "9090",
+				"LOG_LEVEL":           "WARN",
+				"DATABASE_URL":        dbURL,
+				"RABBITMQ_URL":        mqURL,
+				"LOCAL_WEBHOOK_TOKEN": "secret",
+				"SHUTDOWN_TIMEOUT":    "3s",
 			},
 			want: Config{
-				AppEnv:          "staging",
-				HTTPPort:        9090,
-				LogLevel:        slog.LevelWarn,
-				DatabaseURL:     dbURL,
-				ShutdownTimeout: 3 * time.Second,
+				AppEnv:            "staging",
+				HTTPPort:          9090,
+				LogLevel:          slog.LevelWarn,
+				DatabaseURL:       dbURL,
+				RabbitMQURL:       mqURL,
+				LocalWebhookToken: "secret",
+				ShutdownTimeout:   3 * time.Second,
 			},
 		},
 		{
 			name:    "missing DATABASE_URL",
-			env:     map[string]string{},
+			env:     map[string]string{"RABBITMQ_URL": mqURL},
 			wantErr: "DATABASE_URL",
 		},
 		{
+			name:    "missing RABBITMQ_URL",
+			env:     map[string]string{"DATABASE_URL": dbURL},
+			wantErr: "RABBITMQ_URL",
+		},
+		{
 			name:    "invalid HTTP_PORT",
-			env:     map[string]string{"DATABASE_URL": dbURL, "HTTP_PORT": "abc"},
+			env:     map[string]string{"DATABASE_URL": dbURL, "RABBITMQ_URL": mqURL, "HTTP_PORT": "abc"},
 			wantErr: "HTTP_PORT",
 		},
 		{
 			name:    "out of range HTTP_PORT",
-			env:     map[string]string{"DATABASE_URL": dbURL, "HTTP_PORT": "70000"},
+			env:     map[string]string{"DATABASE_URL": dbURL, "RABBITMQ_URL": mqURL, "HTTP_PORT": "70000"},
 			wantErr: "HTTP_PORT",
 		},
 		{
 			name:    "invalid SHUTDOWN_TIMEOUT",
-			env:     map[string]string{"DATABASE_URL": dbURL, "SHUTDOWN_TIMEOUT": "xyz"},
+			env:     map[string]string{"DATABASE_URL": dbURL, "RABBITMQ_URL": mqURL, "SHUTDOWN_TIMEOUT": "xyz"},
 			wantErr: "SHUTDOWN_TIMEOUT",
 		},
 		{
 			name:    "invalid LOG_LEVEL",
-			env:     map[string]string{"DATABASE_URL": dbURL, "LOG_LEVEL": "verbose"},
+			env:     map[string]string{"DATABASE_URL": dbURL, "RABBITMQ_URL": mqURL, "LOG_LEVEL": "verbose"},
 			wantErr: "LOG_LEVEL",
 		},
 	}

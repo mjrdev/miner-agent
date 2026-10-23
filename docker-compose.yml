@@ -15,6 +15,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-miner}:${POSTGRES_PASSWORD:-miner}@postgres:5432/${POSTGRES_DB:-miner}?sslmode=disable}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://${RABBITMQ_DEFAULT_USER:-miner}:${RABBITMQ_DEFAULT_PASS:-miner}@rabbitmq:5672/}
+      LOCAL_WEBHOOK_TOKEN: ${LOCAL_WEBHOOK_TOKEN:-local-dev-token}
     ports:
       - "${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
     volumes:
@@ -24,7 +26,28 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     stop_grace_period: 15s
+
+  # Applies pending migrations once, before the api starts.
+  migrate:
+    image: miner-api:dev
+    build:
+      context: .
+      target: dev
+    command: ["go", "run", "./cmd/migrate", "up"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-miner}:${POSTGRES_PASSWORD:-miner}@postgres:5432/${POSTGRES_DB:-miner}?sslmode=disable}
+    volumes:
+      - .:/app
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   postgres:
     image: postgres:17-alpine
@@ -43,7 +66,50 @@ services:
       retries: 15
       start_period: 5s
 
+  # Integration tests (make test-integration). The test database and vhost are
+  # disposable: the tests delete their data.
+  test:
+    image: miner-api:dev
+    build:
+      context: .
+      target: dev
+    profiles: [test]
+    # -p 1: the integration packages share the test database and vhost.
+    command: ["go", "test", "-count=1", "-p", "1", "./..."]
+    environment:
+      TEST_DATABASE_URL: postgres://${POSTGRES_USER:-miner}:${POSTGRES_PASSWORD:-miner}@postgres:5432/miner_test?sslmode=disable
+      TEST_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-miner}:${RABBITMQ_DEFAULT_PASS:-miner}@rabbitmq:5672/miner_test
+    volumes:
+      - .:/app
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    # The node name derives from the hostname; pinning it keeps the data volume valid across recreations.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-miner}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-miner}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq/mnesia
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
 volumes:
   pgdata:
+  rabbitmqdata:
   gomod:
   gocache:
