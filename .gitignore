@@ -1,0 +1,10 @@
+# Build artifacts
+/tmp/
+/bin/
+/api
+*.exe
+*.test
+*.out
+
+# Local environment
+.env

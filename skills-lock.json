@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "docker-patterns": {
+      "source": "affaan-m/ecc",
+      "sourceType": "github",
+      "skillPath": "skills/docker-patterns/SKILL.md",
+      "computedHash": "2518afd6ae1e1b91d7f8d2f8d9b7145fb08ec640b9624e3dffc0a21289417245"
+    },
+    "golang-code-style": {
+      "source": "samber/cc-skills-golang",
+      "sourceType": "github",
+      "skillPath": "skills/golang-code-style/SKILL.md",
+      "computedHash": "8ce09e462ef435cedc78307c124adb0c83848366b4bc51cd0942d3c79fff1e71"
+    }
+  }
+}

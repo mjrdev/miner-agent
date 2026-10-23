@@ -1,0 +1,49 @@
+name: miner
+
+services:
+  api:
+    image: miner-api:dev
+    build:
+      context: .
+      target: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      HTTP_PORT: ${HTTP_PORT:-8080}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-miner}:${POSTGRES_PASSWORD:-miner}@postgres:5432/${POSTGRES_DB:-miner}?sslmode=disable}
+    ports:
+      - "${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
+    volumes:
+      - .:/app
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 15s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-miner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-miner}
+      POSTGRES_DB: ${POSTGRES_DB:-miner}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  pgdata:
+  gomod:
+  gocache:
