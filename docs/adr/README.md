@@ -37,3 +37,4 @@ ADRs aceitos não são reescritos. Para mudar uma decisão, crie um ADR novo que
 | [0010](0010-rabbitmq-com-quorum-queue-e-dlq-para-a-ingestao-de-tasks.md) | RabbitMQ com quorum queue e DLQ para a ingestão de tasks | Aceito | 2026-10-22 |
 | [0011](0011-acesso-ao-banco-com-codigo-gerado-pelo-sqlc.md) | Acesso ao banco com código gerado pelo sqlc | Aceito | 2026-10-22 |
 | [0012](0012-migracoes-com-goose-e-servico-migrate-no-compose.md) | Migrações com goose e serviço `migrate` no compose | Aceito | 2026-10-22 |
+| [0013](0013-dominio-execution-com-catalogo-de-agentes-em-codigo.md) | Domínio execution com catálogo de agentes em código | Aceito | 2026-10-26 |

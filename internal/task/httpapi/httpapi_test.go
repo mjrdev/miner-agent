@@ -47,7 +47,7 @@ func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	repo := tasktest.NewRepository()
-	svc := task.NewService(repo)
+	svc := task.NewService(repo, tasktest.Catalog())
 	pub := &fakePublisher{}
 	mux := http.NewServeMux()
 	NewWebhooks(adapter.NewRegistry(local.New("secret")), pub, log).Register(mux)
@@ -141,7 +141,10 @@ func TestCreateTask(t *testing.T) {
 	rec := api.do(t, http.MethodPost, "/tasks", `{"title":"Adicionar paginação","description":"Implemente ..."}`)
 	expect(t, rec, http.StatusCreated, "")
 	got := decode[map[string]any](t, rec)
-	for key, want := range map[string]any{"provider": "local", "status": "draft", "external_url": nil, "project_category": nil} {
+	for key, want := range map[string]any{
+		"provider": "local", "status": "draft", "external_url": nil, "project_category": nil,
+		"agent": nil, "model": nil, "effort": nil, "runner": nil,
+	} {
 		if got[key] != want {
 			t.Errorf("%s = %v, want %v", key, got[key], want)
 		}
@@ -182,8 +185,12 @@ func TestGetAndDeleteTask(t *testing.T) {
 
 func TestListTasks(t *testing.T) {
 	api := newTestAPI(t)
-	ready := decode[taskResponse](t, api.do(t, http.MethodPost, "/tasks", `{"title":"A","description":"D","labels":["Backend"]}`))
-	api.do(t, http.MethodPatch, "/tasks/"+ready.ID.String(), `{"status":"ready"}`)
+	cat := decode[categoryResponse](t, api.do(t, http.MethodPost, "/project-categories",
+		`{"name":"Backend","repo_url":"https://github.com/org/repo"}`))
+	ready := decode[taskResponse](t, api.do(t, http.MethodPost, "/tasks",
+		`{"title":"A","description":"D","labels":["Backend"],"project_category_id":"`+cat.ID.String()+`",`+
+			`"agent":"claude","model":"opus","effort":"high","runner":"host"}`))
+	expect(t, api.do(t, http.MethodPatch, "/tasks/"+ready.ID.String(), `{"status":"ready"}`), http.StatusOK, "")
 	api.do(t, http.MethodPost, "/tasks", `{"title":"B","description":"D","labels":["backend"]}`)
 	api.do(t, http.MethodPost, "/tasks", `{"title":"C","description":"D"}`)
 
@@ -297,13 +304,141 @@ func TestProjectCategories(t *testing.T) {
 	expect(t, api.do(t, http.MethodDelete, path, ""), http.StatusNoContent, "")
 }
 
+func TestTaskExecution(t *testing.T) {
+	api := newTestAPI(t)
+	withRepo := decode[categoryResponse](t, api.do(t, http.MethodPost, "/project-categories",
+		`{"name":"Miner","repo_url":"https://github.com/mjrdev/miner-agent"}`))
+
+	rec := api.do(t, http.MethodPost, "/tasks",
+		`{"title":"T","description":"D","agent":"claude","model":"opus","effort":"high","runner":"host"}`)
+	expect(t, rec, http.StatusCreated, "")
+	created := decode[taskResponse](t, rec)
+	if created.Status != task.StatusDraft || *created.Agent != "claude" || *created.Model != "opus" ||
+		*created.Effort != "high" || *created.Runner != "host" {
+		t.Errorf("created = %+v", created)
+	}
+	expect(t, api.do(t, http.MethodPost, "/tasks", `{"title":"T","description":"D","agent":"gpt"}`),
+		http.StatusUnprocessableEntity, codeValidationFailed)
+
+	path := "/tasks/" + created.ID.String()
+	for _, body := range []string{
+		`{"agent":"gpt"}`,
+		`{"agent":"claude","model":"gpt-5"}`,
+		`{"runner":"k8s"}`,
+		`{"model":null,"effort":"high"}`,
+	} {
+		expect(t, api.do(t, http.MethodPatch, path, body), http.StatusUnprocessableEntity, codeValidationFailed)
+	}
+
+	rec = api.do(t, http.MethodPatch, path, `{"status":"ready"}`)
+	expect(t, rec, http.StatusUnprocessableEntity, codeValidationFailed)
+	if msg := decode[errorBody](t, rec).Error.Message; !strings.Contains(msg, "project_category") {
+		t.Errorf("message = %q", msg)
+	}
+
+	rec = api.do(t, http.MethodPatch, path,
+		`{"project_category_id":"`+withRepo.ID.String()+`","model":"sonnet","effort":"low","status":"ready"}`)
+	expect(t, rec, http.StatusOK, "")
+	if got := decode[taskResponse](t, rec); got.Status != task.StatusReady || *got.Model != "sonnet" {
+		t.Errorf("ready = %+v", got)
+	}
+
+	expect(t, api.do(t, http.MethodPatch, path, `{"runner":null}`), http.StatusUnprocessableEntity, codeValidationFailed)
+	expect(t, api.do(t, http.MethodPatch, path, `{"project_category_id":null}`), http.StatusUnprocessableEntity, codeValidationFailed)
+	expect(t, api.do(t, http.MethodPatch, "/project-categories/"+withRepo.ID.String(), `{"repo_url":null}`),
+		http.StatusConflict, codeConflict)
+
+	rec = api.do(t, http.MethodPatch, path, `{"status":"draft","runner":null}`)
+	expect(t, rec, http.StatusOK, "")
+	if got := decode[taskResponse](t, rec); got.Status != task.StatusDraft || got.Runner != nil {
+		t.Errorf("back to draft = %+v", got)
+	}
+	expect(t, api.do(t, http.MethodPatch, "/project-categories/"+withRepo.ID.String(), `{"repo_url":null}`),
+		http.StatusOK, "")
+
+	locked := decode[taskResponse](t, api.do(t, http.MethodPost, "/tasks", `{"title":"T","description":"D"}`))
+	expect(t, api.do(t, http.MethodPatch, "/tasks/"+locked.ID.String(), `{"status":"cancelled"}`), http.StatusOK, "")
+	expect(t, api.do(t, http.MethodPatch, "/tasks/"+locked.ID.String(), `{"model":"sonnet"}`),
+		http.StatusUnprocessableEntity, codeValidationFailed)
+}
+
+func TestCategoryRepository(t *testing.T) {
+	api := newTestAPI(t)
+
+	rec := api.do(t, http.MethodPost, "/project-categories", `{"name":"Integrações Back-end"}`)
+	expect(t, rec, http.StatusCreated, "")
+	got := decode[map[string]any](t, rec)
+	if got["repo_url"] != nil || got["base_branch"] != "main" {
+		t.Errorf("defaults = %v", got)
+	}
+
+	rec = api.do(t, http.MethodPost, "/project-categories",
+		`{"name":"Miner","repo_url":"https://github.com/mjrdev/miner-agent","base_branch":"develop"}`)
+	expect(t, rec, http.StatusCreated, "")
+	miner := decode[categoryResponse](t, rec)
+	if *miner.RepoURL != "https://github.com/mjrdev/miner-agent" || miner.BaseBranch != "develop" {
+		t.Errorf("created = %+v", miner)
+	}
+
+	for _, body := range []string{
+		`{"name":"X","repo_url":"https://user:token@github.com/org/repo"}`,
+		`{"name":"X","repo_url":"git@github.com:org/repo.git"}`,
+		`{"name":"X","base_branch":"feature..x"}`,
+	} {
+		expect(t, api.do(t, http.MethodPost, "/project-categories", body), http.StatusUnprocessableEntity, codeValidationFailed)
+	}
+
+	path := "/project-categories/" + miner.ID.String()
+	rec = api.do(t, http.MethodPatch, path, `{"base_branch":"release/1.x"}`)
+	expect(t, rec, http.StatusOK, "")
+	if got := decode[categoryResponse](t, rec); got.BaseBranch != "release/1.x" || got.RepoURL == nil || got.Name != "Miner" {
+		t.Errorf("branch change = %+v", got)
+	}
+	expect(t, api.do(t, http.MethodPatch, path, `{"base_branch":null}`), http.StatusUnprocessableEntity, codeValidationFailed)
+
+	rec = api.do(t, http.MethodPatch, path, `{"repo_url":null}`)
+	expect(t, rec, http.StatusOK, "")
+	if got := decode[map[string]any](t, rec); got["repo_url"] != nil {
+		t.Errorf("repo_url = %v", got["repo_url"])
+	}
+}
+
+func TestExecutionOptions(t *testing.T) {
+	api := newTestAPI(t)
+	rec := api.do(t, http.MethodGet, "/execution-options", "")
+	expect(t, rec, http.StatusOK, "")
+	got := decode[executionOptionsResponse](t, rec)
+
+	var names []string
+	for _, a := range got.Agents {
+		names = append(names, a.Name)
+	}
+	if strings.Join(names, ",") != "claude,"+tasktest.FakeAgent || strings.Join(got.Runners, ",") != "host" {
+		t.Fatalf("options = %+v", got)
+	}
+	var models []string
+	for _, m := range got.Agents[0].Models {
+		models = append(models, m.ID)
+		if strings.Join(m.Efforts, ",") != "low,medium,high,xhigh,max" {
+			t.Errorf("%s efforts = %v", m.ID, m.Efforts)
+		}
+	}
+	if strings.Join(models, ",") != "fable,opus,sonnet" {
+		t.Errorf("claude models = %v", models)
+	}
+	// A model without efforts is still listed with an empty array.
+	if !strings.Contains(rec.Body.String(), `{"id":"small","efforts":[]}`) {
+		t.Errorf("body = %s", rec.Body.String())
+	}
+}
+
 func TestInternalErrorsAreGeneric(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&buf, nil))
 	repo := tasktest.NewRepository()
 	repo.Err = errors.New("password=secret connection refused")
 	mux := http.NewServeMux()
-	NewTasks(task.NewService(repo), log).Register(mux)
+	NewTasks(task.NewService(repo, tasktest.Catalog()), log).Register(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/tasks", nil))

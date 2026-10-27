@@ -61,8 +61,10 @@ POST|GET|PATCH|DELETE /tasks --------------------------------------------------^
 
 - O webhook só autentica e enfileira, e responde `202` com um `delivery_id` depois que o RabbitMQ confirma a mensagem. O consumer normaliza o payload com o adapter do provider e cria a task em `draft`. Reentregas com o mesmo `(provider, external_id)` não duplicam a task nem desfazem edições.
 - Hoje só existe o provider `local`: tasks sem ticket em provider, testes locais e fontes sem adapter próprio. Ele autentica pelo header `X-Webhook-Token` (valor de `LOCAL_WEBHOOK_TOKEN`, `local-dev-token` em desenvolvimento). O corpo aceita `title` e `description` obrigatórios e `type` (`created`, `updated` ou `closed`; por enquanto só `created` é aplicado), `external_id` e `url` opcionais.
-- Campos do provider: título, descrição (o prompt), URL. Só são editáveis pelo CRUD em tasks `local`. Campos da pessoa usuária: instruções adicionais (lista ordenada), labels, categoria de projeto e status.
+- Campos do provider: título, descrição (o prompt), URL. Só são editáveis pelo CRUD em tasks `local`. Campos da pessoa usuária: instruções adicionais (lista ordenada), labels, categoria de projeto, configuração de execução e status.
 - Status: `draft → ready → in_progress → in_review → done`, com `ready → draft`, `in_progress → failed`, `failed → ready`, `in_review → ready` e `cancelled` a partir de qualquer estado não terminal. Uma transição inválida responde `409`.
+- Configuração de execução: `agent`, `model`, `effort` e `runner`, validados contra o catálogo de `GET /execution-options` (`null` limpa o campo). Ela não muda enquanto a task está em `in_progress`, `done` ou `cancelled`.
+- Uma task só fica em `ready` com `agent`, `model`, `runner` (e `effort`, quando o modelo tem esforços) e uma categoria com `repo_url`. Faltando algo, a transição, ou qualquer edição de uma task já em `ready`, responde `422` com a lista do que falta. Remover o `repo_url` de uma categoria com tasks em `ready` responde `409`.
 
 > O CRUD **não tem autenticação**. Não exponha o serviço fora do ambiente local.
 
@@ -79,10 +81,17 @@ curl -i -X POST localhost:8080/tasks \
 # Listar com filtros (status, provider, project_category_id, label, limit, offset)
 curl -s 'localhost:8080/tasks?status=draft&label=backend'
 
-# Categoria de projeto e edição da task
-curl -s -X POST localhost:8080/project-categories -d '{"name":"Backend"}'
+# Agentes, modelos, esforços e runners disponíveis
+curl -s localhost:8080/execution-options
+
+# Categoria de projeto com o repositório que o agente clona (base_branch padrão: main)
+curl -s -X POST localhost:8080/project-categories \
+  -d '{"name":"Backend","repo_url":"https://github.com/org/backend","base_branch":"develop"}'
+
+# Configurar a execução e liberar a task para o agente
 curl -i -X PATCH localhost:8080/tasks/<id> \
-  -d '{"status":"ready","additional_instructions":["Use a lib X"],"project_category_id":"<categoria>"}'
+  -d '{"project_category_id":"<categoria>","agent":"claude","model":"opus","effort":"high","runner":"host"}'
+curl -i -X PATCH localhost:8080/tasks/<id> -d '{"status":"ready"}'
 ```
 
 | Método | Caminho                       | Descrição |
@@ -91,11 +100,12 @@ curl -i -X PATCH localhost:8080/tasks/<id> \
 | POST   | `/tasks`                      | Cria uma task `local` em `draft` |
 | GET    | `/tasks`                      | Lista `{"items":[...],"total":n}`, da mais recente para a mais antiga (`limit` padrão 50, máximo 200) |
 | GET    | `/tasks/{id}`                 | Lê uma task |
-| PATCH  | `/tasks/{id}`                 | Altera os campos enviados (`project_category_id: null` remove a categoria) |
+| PATCH  | `/tasks/{id}`                 | Altera os campos enviados (`null` em `project_category_id`, `agent`, `model`, `effort` ou `runner` limpa o campo) |
 | DELETE | `/tasks/{id}`                 | Remove uma task |
 | GET    | `/labels`                     | Lista as labels existentes |
+| GET    | `/execution-options`          | Lista `{"agents":[{"name","models":[{"id","efforts"}]}],"runners":[...]}` |
 | POST/GET | `/project-categories`       | Cria (slug derivado do nome quando omitido) e lista categorias |
-| GET/PATCH/DELETE | `/project-categories/{id}` | Lê, altera e remove (`409` se houver tasks associadas) |
+| GET/PATCH/DELETE | `/project-categories/{id}` | Lê, altera (`repo_url: null` remove o repositório) e remove (`409` se houver tasks associadas) |
 
 Erros usam `{"error":{"code":"...","message":"..."}}`, com os códigos `validation_failed`, `not_found`, `conflict`, `invalid_transition`, `unauthorized`, `payload_too_large`, `unavailable` e `internal_error`.
 
@@ -147,11 +157,13 @@ internal/database/     pool de conexões PostgreSQL (pgx)
 internal/broker/       conexão com o RabbitMQ (retry, reconexão, confirms)
 internal/handler/      handlers de saúde
 internal/server/       rotas, middlewares e servidor com graceful shutdown
+internal/execution/    catálogo de agentes (contrato Agent) e runners
+  claude/              agente do Claude Code
 internal/task/         domínio Task: entidades, regras e service
   adapter/             contrato dos providers e adapter local
   ingest/              topologia, publisher e consumer da fila
   postgres/            repositório (sqlc)
-  httpapi/             handlers de webhooks, tasks, categorias e labels
+  httpapi/             handlers de webhooks, tasks, categorias, labels e opções de execução
 migrations/            migrações SQL (goose)
 docs/adr/              decisões de arquitetura (ADRs)
 ```

@@ -44,14 +44,16 @@ Postgres no host fica na porta **5433** (`postgres://miner:miner@localhost:5433/
 
 ## Arquitetura
 
-Composição inteira em `cmd/api/main.go`: config → logger → pool pgx → broker (declara a topologia em toda (re)conexão) → registry de adapters → `task.Service` → consumer → router → servidor com graceful shutdown. A ordem dos `defer` importa: o consumer para antes do broker e do pool fecharem.
+Composição inteira em `cmd/api/main.go`: config → logger → pool pgx → broker (declara a topologia em toda (re)conexão) → registry de adapters → catálogo de execução → `task.Service` → consumer → router → servidor com graceful shutdown. A ordem dos `defer` importa: o consumer para antes do broker e do pool fecharem.
 
 **Domínio em `internal/<domínio>/`** (ADR-0009). O pacote raiz `internal/task` tem entidades, regras de status, validação, `Service` e a interface `Repository`; subpacotes dependem dele, nunca o contrário:
 
 - `adapter/` — contrato `Adapter` (`Name`/`Verify`/`Parse`) e `Registry`. Provider novo = subpacote novo (hoje só `local/`, autenticado por `X-Webhook-Token`) registrado em `main.go`; não precisa tocar fila, banco nem HTTP.
 - `ingest/` — topologia, `Publisher` e `Consumer`.
 - `postgres/` — implementação do `Repository` com sqlc.
-- `httpapi/` — handlers de `/webhooks`, `/tasks`, `/project-categories`, `/labels`. Dependem do `*task.Service` concreto; os testes usam o service real com o repositório em memória de `tasktest/`.
+- `httpapi/` — handlers de `/webhooks`, `/tasks`, `/project-categories`, `/labels`, `/execution-options`. Dependem do `*task.Service` concreto; os testes usam o service real com o repositório em memória e o catálogo de `tasktest/` (`tasktest.Catalog()`: `claude` real + agente fake).
+
+**Execução em `internal/execution/`** (ADR-0013): folha do grafo — **não importa `task`**; o `task` importa ele. Contrato `Agent` (`Name`/`Models`, cada `Model` com `Efforts` ordenados) e `Catalog` (agentes + nomes de runners, hoje só `host`), montado em `main.go` e passado a `task.NewService(repo, catalog)`. Agente novo = subpacote novo (hoje `claude/`, com os aliases `fable`/`opus`/`sonnet`). O catálogo é estático em código.
 
 Pacotes fora de domínio (`broker`, `database`, `server`, `config`, `logger`, `handler`) ficam direto em `internal/`. Roteamento usa `net/http.ServeMux` com middlewares próprios (sem framework); logs JSON com `log/slog`; config só por variáveis de ambiente.
 
@@ -61,6 +63,6 @@ Pacotes fora de domínio (`broker`, `database`, `server`, `config`, `logger`, `h
 
 A idempotência vem de `InsertTaskIfAbsent` por `(provider, external_id)`: reentregas não duplicam nem sobrescrevem edições. Por enquanto só eventos `created` são aplicados.
 
-**Regras de domínio:** campos do provider (título, descrição, URL) só são editáveis no CRUD para tasks `local`; campos da pessoa usuária são instruções adicionais, labels, categoria e status. Transições de status ficam no pacote `task` e uma inválida vira `409 invalid_transition`. `Repository.UpdateTask`/`UpdateCategory` recebem uma função de mutação aplicada atomicamente — as regras rodam dentro dela. Erros HTTP seguem `{"error":{"code","message"}}`.
+**Regras de domínio:** campos do provider (título, descrição, URL) só são editáveis no CRUD para tasks `local`; campos da pessoa usuária são instruções adicionais, labels, categoria, configuração de execução (`agent`/`model`/`effort`/`runner`) e status. Transições de status ficam no pacote `task` e uma inválida vira `409 invalid_transition`. `Repository.UpdateTask`/`UpdateCategory` recebem uma função de mutação aplicada atomicamente — as regras rodam dentro dela, e ela **não pode consultar o repositório** (deadlock no mutex do `tasktest`); por isso `Service.Update` busca a categoria nova antes. Ordem em `Service.apply`: campos do provider → lock da execução (`in_progress`/`done`/`cancelled`) → aplicação → transição (`409`) → validação no catálogo → pré-requisitos de `ready` (agente, modelo, runner, esforço quando o modelo tem, categoria com `repo_url`; `422` listando o que falta). Erros HTTP seguem `{"error":{"code","message"}}`.
 
 **Banco:** migrações goose em `migrations/` (numeração sequencial, embutidas via `migrations.FS`, aplicadas pelo serviço `migrate` antes da api subir). Queries em `internal/task/postgres/queries/*.sql`; após mudar queries ou migrações rode `make sqlc` e commite o código gerado em `sqlcdb/` (nunca edite à mão).

@@ -252,13 +252,13 @@ func (r *Repository) slugTaken(slug string, except uuid.UUID) bool {
 	return false
 }
 
-// resolve fills the category name and slug from the current category, as the
-// SQL join does.
+// resolve fills the category name, slug and repository from the current
+// category, as the SQL join does.
 func (r *Repository) resolve(t task.Task) task.Task {
 	t = clone(t)
 	if t.ProjectCategory != nil {
 		c := r.categories[t.ProjectCategory.ID]
-		t.ProjectCategory = &task.CategoryRef{ID: c.ID, Slug: c.Slug, Name: c.Name}
+		t.ProjectCategory = &task.CategoryRef{ID: c.ID, Slug: c.Slug, Name: c.Name, RepoURL: c.RepoURL}
 	}
 	return t
 }
@@ -284,5 +284,15 @@ func clone(t task.Task) task.Task {
 		ref := *t.ProjectCategory
 		t.ProjectCategory = &ref
 	}
+	e := &t.Execution
+	e.Agent, e.Model, e.Effort, e.Runner = copyPtr(e.Agent), copyPtr(e.Model), copyPtr(e.Effort), copyPtr(e.Runner)
 	return t
+}
+
+func copyPtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

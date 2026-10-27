@@ -18,6 +18,7 @@ import (
 	"github.com/jrgomesdev/miner/internal/task/adapter/local"
 	"github.com/jrgomesdev/miner/internal/task/ingest"
 	"github.com/jrgomesdev/miner/internal/task/postgres"
+	"github.com/jrgomesdev/miner/internal/task/tasktest"
 	"github.com/jrgomesdev/miner/internal/testdb"
 )
 
@@ -41,12 +42,12 @@ func connectBroker(t *testing.T) *broker.Broker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ch, err := conn.Channel()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 	for _, q := range []string{ingest.Queue, ingest.DeadLetterQueue} {
 		if _, err := ch.QueuePurge(q, false); err != nil {
 			t.Fatalf("purge %s (does the topology exist?): %v", q, err)
@@ -62,12 +63,12 @@ func deadLettered(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	ch, err := conn.Channel()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ch.Close()
+	defer func() { _ = ch.Close() }()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -110,7 +111,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func TestIngestionCreatesTasksOnce(t *testing.T) {
 	ctx := context.Background()
-	svc := task.NewService(postgres.NewRepository(testdb.Pool(t)))
+	svc := task.NewService(postgres.NewRepository(testdb.Pool(t)), tasktest.Catalog())
 	b := connectBroker(t)
 	startConsumer(t, b, svc)
 	pub := ingest.NewPublisher(b)

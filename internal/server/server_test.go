@@ -124,7 +124,7 @@ func TestServeGracefulShutdownWaitsForInFlightRequest(t *testing.T) {
 
 	select {
 	case resp := <-respCh:
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("in-flight request status = %d, want 200", resp.StatusCode)
 		}

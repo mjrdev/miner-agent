@@ -11,12 +11,13 @@ import (
 
 	"github.com/jrgomesdev/miner/internal/task"
 	"github.com/jrgomesdev/miner/internal/task/postgres"
+	"github.com/jrgomesdev/miner/internal/task/tasktest"
 	"github.com/jrgomesdev/miner/internal/testdb"
 )
 
 func newService(t *testing.T) *task.Service {
 	t.Helper()
-	return task.NewService(postgres.NewRepository(testdb.Pool(t)))
+	return task.NewService(postgres.NewRepository(testdb.Pool(t)), tasktest.Catalog())
 }
 
 func TestApplyEventIsIdempotent(t *testing.T) {
@@ -50,7 +51,7 @@ func TestApplyEventIsIdempotent(t *testing.T) {
 func TestListFilters(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
-	cat, err := svc.CreateCategory(ctx, task.CategoryInput{Name: "Backend"})
+	cat, err := svc.CreateCategory(ctx, task.CategoryInput{Name: "Backend", RepoURL: new("https://github.com/org/repo")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +63,7 @@ func TestListFilters(t *testing.T) {
 			Description:       "D",
 			Labels:            labels,
 			ProjectCategoryID: &cat.ID,
+			Execution:         task.Execution{Agent: new("claude"), Model: new("opus"), Effort: new("high"), Runner: new("host")},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -192,5 +194,73 @@ func TestCategoryConstraints(t *testing.T) {
 	}
 	if err := svc.Delete(ctx, created.ID); !errors.Is(err, task.ErrNotFound) {
 		t.Errorf("deleting missing task error = %v", err)
+	}
+}
+
+func TestExecutionAndRepositoryRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	svc := newService(t)
+
+	plain, err := svc.CreateCategory(ctx, task.CategoryInput{Name: "Plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.GetCategory(ctx, plain.ID); err != nil || got.BaseBranch != "main" || got.RepoURL != nil {
+		t.Errorf("defaults = %+v, %v", got, err)
+	}
+
+	cat, err := svc.CreateCategory(ctx, task.CategoryInput{
+		Name: "Miner", RepoURL: new("https://github.com/mjrdev/miner-agent"), BaseBranch: "develop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.GetCategory(ctx, cat.ID); *got.RepoURL != "https://github.com/mjrdev/miner-agent" || got.BaseBranch != "develop" {
+		t.Errorf("category = %+v", got)
+	}
+
+	created, err := svc.CreateLocal(ctx, task.CreateInput{
+		Title:       "T",
+		Description: "D",
+		Execution:   task.Execution{Agent: new("claude"), Model: new("opus"), Effort: new("high"), Runner: new("host")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := created.Execution; *e.Agent != "claude" || *e.Model != "opus" || *e.Effort != "high" || *e.Runner != "host" {
+		t.Errorf("created execution = %+v", e)
+	}
+
+	got, err := svc.Update(ctx, created.ID, task.UpdateInput{
+		SetProjectCategory: true, ProjectCategoryID: &cat.ID,
+		SetEffort: true, Effort: new("low"), Status: new(task.StatusReady),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusReady || *got.Execution.Effort != "low" ||
+		*got.ProjectCategory.RepoURL != "https://github.com/mjrdev/miner-agent" {
+		t.Errorf("updated = %+v", got)
+	}
+
+	if _, err := svc.UpdateCategory(ctx, cat.ID, task.CategoryPatch{SetRepoURL: true}); !errors.Is(err, task.ErrConflict) {
+		t.Errorf("removing repository in use = %v, want ErrConflict", err)
+	}
+	if _, err := svc.UpdateCategory(ctx, cat.ID, task.CategoryPatch{
+		SetRepoURL: true, RepoURL: new("https://github.com/org/other"), BaseBranch: new("release/1.x"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, _, err := svc.List(ctx, task.ListFilter{ProjectCategoryID: &cat.ID, Limit: 1})
+	if err != nil || len(list) != 1 || *list[0].ProjectCategory.RepoURL != "https://github.com/org/other" {
+		t.Errorf("listed category ref = %+v, %v", list, err)
+	}
+	if c, _ := svc.GetCategory(ctx, cat.ID); c.BaseBranch != "release/1.x" {
+		t.Errorf("base branch = %q", c.BaseBranch)
+	}
+
+	got, err = svc.Update(ctx, created.ID, task.UpdateInput{Status: new(task.StatusDraft), SetRunner: true})
+	if err != nil || got.Execution.Runner != nil {
+		t.Errorf("clearing runner = %+v, %v", got.Execution, err)
 	}
 }
