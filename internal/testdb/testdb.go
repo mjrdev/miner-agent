@@ -31,7 +31,7 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
 	if err != nil {
 		t.Fatal(err)

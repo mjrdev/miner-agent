@@ -47,7 +47,7 @@ func run(ctx context.Context, args []string, log *slog.Logger) error {
 		// The parse error may echo parts of the URL, so it is not wrapped.
 		return errors.New("invalid DATABASE_URL")
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
 	if err != nil {
