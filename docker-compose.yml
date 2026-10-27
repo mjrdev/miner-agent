@@ -6,9 +6,8 @@ services:
     build:
       context: .
       target: dev
-    env_file:
-      - path: .env
-        required: false
+    # Only the listed variables reach the container (compose reads .env to
+    # fill them in), so the worker's secrets stay out of the api.
     environment:
       APP_ENV: ${APP_ENV:-development}
       HTTP_PORT: ${HTTP_PORT:-8080}
@@ -17,12 +16,51 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-miner}:${POSTGRES_PASSWORD:-miner}@postgres:5432/${POSTGRES_DB:-miner}?sslmode=disable}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://${RABBITMQ_DEFAULT_USER:-miner}:${RABBITMQ_DEFAULT_PASS:-miner}@rabbitmq:5672/}
       LOCAL_WEBHOOK_TOKEN: ${LOCAL_WEBHOOK_TOKEN:-local-dev-token}
+      RUNS_DIR: /runs
     ports:
       - "${HTTP_PORT:-8080}:${HTTP_PORT:-8080}"
     volumes:
       - .:/app
       - gomod:/go/pkg/mod
       - gocache:/root/.cache/go-build
+      # Read-only: the api serves the run events the worker writes.
+      - ./runs:/runs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 15s
+
+  # Executes the runs. The only service with the Docker socket, which is
+  # root-equivalent on the host (ADR-0014), and the only one with secrets.
+  worker:
+    image: miner-api:dev
+    build:
+      context: .
+      target: dev
+    command: ["air", "-c", ".air.worker.toml"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-miner}:${POSTGRES_PASSWORD:-miner}@postgres:5432/${POSTGRES_DB:-miner}?sslmode=disable}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://${RABBITMQ_DEFAULT_USER:-miner}:${RABBITMQ_DEFAULT_PASS:-miner}@rabbitmq:5672/}
+      MAX_CONCURRENT_RUNS: ${MAX_CONCURRENT_RUNS:-1}
+      RUN_TIMEOUT: ${RUN_TIMEOUT:-60m}
+      AGENT_IMAGE: ${AGENT_IMAGE:-miner-agent:default}
+      RUNS_DIR: /runs
+      RUNS_HOST_DIR: ${RUNS_HOST_DIR:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GIT_TOKEN: ${GIT_TOKEN:-}
+    volumes:
+      - .:/app
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+      - ./runs:/runs
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy

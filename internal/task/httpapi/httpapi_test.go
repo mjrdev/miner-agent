@@ -9,9 +9,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/jrgomesdev/miner/internal/execution/run"
+	"github.com/jrgomesdev/miner/internal/execution/run/runtest"
 	"github.com/jrgomesdev/miner/internal/task"
 	"github.com/jrgomesdev/miner/internal/task/adapter"
 	"github.com/jrgomesdev/miner/internal/task/adapter/local"
@@ -37,22 +43,31 @@ func (p *fakePublisher) Publish(_ context.Context, provider, deliveryID string, 
 }
 
 type testAPI struct {
-	mux  *http.ServeMux
-	svc  *task.Service
-	repo *tasktest.Repository
-	pub  *fakePublisher
+	mux     *http.ServeMux
+	svc     *task.Service
+	repo    *tasktest.Repository
+	pub     *fakePublisher
+	runs    *runtest.Repository
+	runPub  *fakeRunPublisher
+	runsDir string
 }
+
+type fakeRunPublisher struct{ err error }
+
+func (p *fakeRunPublisher) Publish(context.Context, uuid.UUID) error { return p.err }
 
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	repo := tasktest.NewRepository()
-	svc := task.NewService(repo, tasktest.Catalog())
-	pub := &fakePublisher{}
+	runs := runtest.NewRepository(repo)
+	svc := task.NewService(repo, tasktest.Catalog(), run.NewGuard(runs))
+	pub, runPub, runsDir := &fakePublisher{}, &fakeRunPublisher{}, t.TempDir()
 	mux := http.NewServeMux()
 	NewWebhooks(adapter.NewRegistry(local.New("secret")), pub, log).Register(mux)
 	NewTasks(svc, log).Register(mux)
-	return &testAPI{mux: mux, svc: svc, repo: repo, pub: pub}
+	NewRuns(run.NewService(runs, svc, runPub), runsDir, log).Register(mux)
+	return &testAPI{mux: mux, svc: svc, repo: repo, pub: pub, runs: runs, runPub: runPub, runsDir: runsDir}
 }
 
 func (a *testAPI) do(t *testing.T, method, path, body string, header ...string) *httptest.ResponseRecorder {
@@ -438,7 +453,7 @@ func TestInternalErrorsAreGeneric(t *testing.T) {
 	repo := tasktest.NewRepository()
 	repo.Err = errors.New("password=secret connection refused")
 	mux := http.NewServeMux()
-	NewTasks(task.NewService(repo, tasktest.Catalog()), log).Register(mux)
+	NewTasks(task.NewService(repo, tasktest.Catalog(), tasktest.NoRuns()), log).Register(mux)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/tasks", nil))
@@ -449,4 +464,163 @@ func TestInternalErrorsAreGeneric(t *testing.T) {
 	if !strings.Contains(buf.String(), "request failed") {
 		t.Error("internal error not logged")
 	}
+}
+
+// readyTask creates a configured task in a category with a repository and
+// moves it to ready, returning its path.
+func (a *testAPI) readyTask(t *testing.T) string {
+	t.Helper()
+	cat := decode[categoryResponse](t, a.do(t, http.MethodPost, "/project-categories",
+		`{"name":"Repo `+uuid.NewString()+`","repo_url":"https://github.com/org/repo","base_branch":"develop"}`))
+	tk := decode[taskResponse](t, a.do(t, http.MethodPost, "/tasks",
+		`{"title":"T","description":"D","project_category_id":"`+cat.ID.String()+`",`+
+			`"agent":"claude","model":"opus","effort":"high","runner":"host"}`))
+	path := "/tasks/" + tk.ID.String()
+	expect(t, a.do(t, http.MethodPatch, path, `{"status":"ready"}`), http.StatusOK, "")
+	return path
+}
+
+func TestRuns(t *testing.T) {
+	api := newTestAPI(t)
+	path := api.readyTask(t)
+
+	rec := api.do(t, http.MethodPost, path+"/runs", "")
+	expect(t, rec, http.StatusAccepted, "")
+	started := decode[runResponse](t, rec)
+	if started.Status != run.StatusQueued || started.Agent != "claude" || *started.Effort != "high" ||
+		started.BaseBranch != "develop" || !strings.HasPrefix(started.Branch, "miner/") {
+		t.Errorf("started = %+v", started)
+	}
+	if got := decode[taskResponse](t, api.do(t, http.MethodGet, path, "")); got.Status != task.StatusInProgress {
+		t.Errorf("task status = %s", got.Status)
+	}
+	expect(t, api.do(t, http.MethodPost, path+"/runs", ""), http.StatusConflict, codeConflict)
+
+	runPath := "/runs/" + started.ID.String()
+	rec = api.do(t, http.MethodGet, runPath, "")
+	expect(t, rec, http.StatusOK, "")
+	if body := decode[map[string]any](t, rec); body["diff"] != nil || body["auth_method"] != nil {
+		t.Errorf("queued run body = %v", body)
+	} else if _, ok := body["diff"]; !ok {
+		t.Error("diff missing from the run")
+	}
+
+	rec = api.do(t, http.MethodGet, runPath+"/logs", "")
+	expect(t, rec, http.StatusOK, "")
+	if rec.Header().Get("Content-Type") != "application/x-ndjson" || rec.Body.Len() != 0 {
+		t.Errorf("logs of a queued run: %q %q", rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+
+	// Task rules while the run is active.
+	expect(t, api.do(t, http.MethodPatch, path, `{"status":"failed"}`), http.StatusConflict, codeConflict)
+	expect(t, api.do(t, http.MethodPatch, path, `{"labels":["urgente"]}`), http.StatusOK, "")
+	expect(t, api.do(t, http.MethodDelete, path, ""), http.StatusConflict, codeConflict)
+
+	rec = api.do(t, http.MethodPost, runPath+"/cancel", "")
+	expect(t, rec, http.StatusAccepted, "")
+	if got := decode[runResponse](t, rec); got.Status != run.StatusCancelled || got.FinishedAt == nil {
+		t.Errorf("cancelled = %+v", got)
+	}
+	if got := decode[taskResponse](t, api.do(t, http.MethodGet, path, "")); got.Status != task.StatusReady {
+		t.Errorf("task status after cancel = %s", got.Status)
+	}
+	expect(t, api.do(t, http.MethodPost, runPath+"/cancel", ""), http.StatusConflict, codeInvalidTransition)
+
+	// A second run, finished by the worker with events and a diff.
+	second := decode[runResponse](t, api.do(t, http.MethodPost, path+"/runs", ""))
+	ctx := context.Background()
+	if _, err := api.runs.MarkRunning(ctx, second.ID, time.Now(), "oauth"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.runs.Finish(ctx, second.ID, run.StatusSucceeded, run.Result{Diff: new("+x\n"), CostUSD: new(0.5)}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(api.runsDir+"/"+second.ID.String(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(api.runsDir+"/"+second.ID.String()+"/events.jsonl", []byte("{\"type\":\"result\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := decode[runDetailResponse](t, api.do(t, http.MethodGet, "/runs/"+second.ID.String(), ""))
+	if got.Status != run.StatusSucceeded || *got.Diff != "+x\n" || *got.AuthMethod != "oauth" || *got.CostUSD != 0.5 {
+		t.Errorf("finished run = %+v", got)
+	}
+	if body := api.do(t, http.MethodGet, "/runs/"+second.ID.String()+"/logs", "").Body.String(); body != "{\"type\":\"result\"}\n" {
+		t.Errorf("logs = %q", body)
+	}
+
+	rec = api.do(t, http.MethodGet, path+"/runs", "")
+	expect(t, rec, http.StatusOK, "")
+	list := decode[map[string][]map[string]any](t, rec)["items"]
+	if len(list) != 2 || list[0]["id"] != second.ID.String() {
+		t.Fatalf("list = %v", list)
+	}
+	if _, ok := list[0]["diff"]; ok {
+		t.Error("diff in the listing")
+	}
+
+	// The task went to in_review; deleting it removes the finished runs.
+	expect(t, api.do(t, http.MethodDelete, path, ""), http.StatusNoContent, "")
+	expect(t, api.do(t, http.MethodGet, "/runs/"+second.ID.String(), ""), http.StatusNotFound, codeNotFound)
+}
+
+func TestRunErrors(t *testing.T) {
+	api := newTestAPI(t)
+	missing := "/tasks/0199f5b0-0000-7000-8000-000000000000"
+	expect(t, api.do(t, http.MethodPost, missing+"/runs", ""), http.StatusNotFound, codeNotFound)
+	expect(t, api.do(t, http.MethodGet, missing+"/runs", ""), http.StatusNotFound, codeNotFound)
+	expect(t, api.do(t, http.MethodGet, "/runs/x", ""), http.StatusNotFound, codeNotFound)
+	expect(t, api.do(t, http.MethodGet, "/runs/0199f5b0-0000-7000-8000-000000000000/logs", ""), http.StatusNotFound, codeNotFound)
+	expect(t, api.do(t, http.MethodPost, "/runs/0199f5b0-0000-7000-8000-000000000000/cancel", ""), http.StatusNotFound, codeNotFound)
+
+	draft := "/tasks/" + decode[taskResponse](t, api.do(t, http.MethodPost, "/tasks", `{"title":"T","description":"D"}`)).ID.String()
+	expect(t, api.do(t, http.MethodPost, draft+"/runs", ""), http.StatusConflict, codeInvalidTransition)
+
+	path := api.readyTask(t)
+	tk := decode[taskResponse](t, api.do(t, http.MethodGet, path, ""))
+	if _, err := api.repo.UpdateTask(context.Background(), tk.ID, func(t *task.Task) error { t.Execution.Model = new("retired"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, api.do(t, http.MethodPost, path+"/runs", ""), http.StatusUnprocessableEntity, codeValidationFailed)
+
+	other := api.readyTask(t)
+	api.runPub.err = errors.New("broker: not connected")
+	expect(t, api.do(t, http.MethodPost, other+"/runs", ""), http.StatusServiceUnavailable, codeUnavailable)
+	if got := decode[taskResponse](t, api.do(t, http.MethodGet, other, "")); got.Status != task.StatusReady {
+		t.Errorf("task status after queue failure = %s", got.Status)
+	}
+	if list := decode[runListResponse](t, api.do(t, http.MethodGet, other+"/runs", "")); len(list.Items) != 0 {
+		t.Errorf("runs kept after queue failure: %d", len(list.Items))
+	}
+}
+
+func TestCancelTaskWithRunningRun(t *testing.T) {
+	api := newTestAPI(t)
+	path := api.readyTask(t)
+	started := decode[runResponse](t, api.do(t, http.MethodPost, path+"/runs", ""))
+	if _, err := api.runs.MarkRunning(context.Background(), started.ID, time.Now(), "oauth"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := api.do(t, http.MethodPatch, path, `{"status":"cancelled"}`)
+	expect(t, rec, http.StatusOK, "")
+	if got := decode[taskResponse](t, rec); got.Status != task.StatusCancelled {
+		t.Errorf("task = %s", got.Status)
+	}
+	got, _ := api.runs.Get(context.Background(), started.ID)
+	if got.Status != run.StatusRunning || got.CancelRequestedAt == nil {
+		t.Errorf("run = %s, cancel requested %v", got.Status, got.CancelRequestedAt)
+	}
+}
+
+func TestRecoverTaskInProgressWithoutRun(t *testing.T) {
+	api := newTestAPI(t)
+	tk := decode[taskResponse](t, api.do(t, http.MethodPost, "/tasks", `{"title":"T","description":"D"}`))
+	if _, err := api.repo.UpdateTask(context.Background(), tk.ID, func(t *task.Task) error { t.Status = task.StatusInProgress; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// The task is not configured, so ready is refused by its prerequisites,
+	// not by the transition table.
+	expect(t, api.do(t, http.MethodPatch, "/tasks/"+tk.ID.String(), `{"status":"ready"}`), http.StatusUnprocessableEntity, codeValidationFailed)
+	expect(t, api.do(t, http.MethodPatch, "/tasks/"+tk.ID.String(), `{"status":"cancelled"}`), http.StatusOK, "")
 }

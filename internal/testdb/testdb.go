@@ -46,7 +46,7 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	if _, err := pool.Exec(ctx, "TRUNCATE task_labels, labels, tasks, project_categories"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE runs, task_labels, labels, tasks, project_categories"); err != nil {
 		t.Fatalf("truncate tables: %v", err)
 	}
 	return pool

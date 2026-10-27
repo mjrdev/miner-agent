@@ -29,6 +29,7 @@ func TestLoad(t *testing.T) {
 				DatabaseURL:     dbURL,
 				RabbitMQURL:     mqURL,
 				ShutdownTimeout: 10 * time.Second,
+				RunsDir:         "/runs",
 			},
 		},
 		{
@@ -41,6 +42,7 @@ func TestLoad(t *testing.T) {
 				"RABBITMQ_URL":        mqURL,
 				"LOCAL_WEBHOOK_TOKEN": "secret",
 				"SHUTDOWN_TIMEOUT":    "3s",
+				"RUNS_DIR":            "/data/runs",
 			},
 			want: Config{
 				AppEnv:            "staging",
@@ -50,6 +52,7 @@ func TestLoad(t *testing.T) {
 				RabbitMQURL:       mqURL,
 				LocalWebhookToken: "secret",
 				ShutdownTimeout:   3 * time.Second,
+				RunsDir:           "/data/runs",
 			},
 		},
 		{

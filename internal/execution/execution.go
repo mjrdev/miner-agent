@@ -4,8 +4,11 @@
 package execution
 
 import (
+	"context"
 	"fmt"
 	"slices"
+
+	"github.com/google/uuid"
 )
 
 // Agent is an AI agent able to work on a task.
@@ -14,6 +17,50 @@ type Agent interface {
 	Name() string
 	// Models lists the models the agent accepts, in display order.
 	Models() []Model
+	// Command returns the argv that runs the agent without interaction. The
+	// prompt is written to its standard input, and the agent writes its
+	// events to standard output as JSON lines.
+	Command(Invocation) []string
+	// Credential picks, in the agent's order of priority, the credential
+	// found through getenv. It reports false when none is configured.
+	Credential(getenv func(string) string) (Credential, bool)
+}
+
+// Invocation is what an agent receives to work on a task.
+type Invocation struct {
+	Prompt string
+	Model  string
+	// Effort is nil when the model takes no effort level.
+	Effort *string
+}
+
+// Credential authenticates an agent inside a run environment.
+type Credential struct {
+	// Method is recorded on the run, for example "oauth" or "api_key".
+	Method string
+	// Env is the variable the agent reads Value from.
+	Env   string
+	Value string
+}
+
+// Job is a run handed to a runner.
+type Job struct {
+	RunID uuid.UUID
+	// Dir is the run directory on the host, mounted into the environment.
+	Dir   string
+	Image string
+	Env   map[string]string
+}
+
+// Runner executes jobs in an isolated, disposable environment.
+type Runner interface {
+	// Name matches a runner name of the catalog.
+	Name() string
+	// Run executes j until it exits and returns its exit code. Cancelling
+	// ctx stops the environment and returns ctx's error.
+	Run(ctx context.Context, j Job) (int, error)
+	// Cleanup removes the environments left behind by a previous process.
+	Cleanup(ctx context.Context) error
 }
 
 // Model is a model an agent accepts.

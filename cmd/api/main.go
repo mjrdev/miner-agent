@@ -13,6 +13,8 @@ import (
 	"github.com/jrgomesdev/miner/internal/database"
 	"github.com/jrgomesdev/miner/internal/execution"
 	"github.com/jrgomesdev/miner/internal/execution/claude"
+	execrun "github.com/jrgomesdev/miner/internal/execution/run"
+	runpg "github.com/jrgomesdev/miner/internal/execution/run/postgres"
 	"github.com/jrgomesdev/miner/internal/handler"
 	"github.com/jrgomesdev/miner/internal/logger"
 	"github.com/jrgomesdev/miner/internal/server"
@@ -57,7 +59,7 @@ func run(ctx context.Context) error {
 		log.Info("database pool closed")
 	}()
 
-	mq, err := broker.Connect(ctx, cfg.RabbitMQURL, ingest.DeclareTopology, log)
+	mq, err := broker.Connect(ctx, cfg.RabbitMQURL, broker.Setups(ingest.DeclareTopology, execrun.DeclareTopology), log)
 	if err != nil {
 		log.Error("failed to connect to message broker", "error", err)
 		return err
@@ -74,7 +76,9 @@ func run(ctx context.Context) error {
 	}
 	registry := adapter.NewRegistry(local.New(cfg.LocalWebhookToken))
 	catalog := execution.NewCatalog([]execution.Agent{claude.New()}, []string{"host"})
-	tasks := task.NewService(postgres.NewRepository(pool), catalog)
+	runRepo := runpg.NewRepository(pool)
+	tasks := task.NewService(postgres.NewRepository(pool), catalog, execrun.NewGuard(runRepo))
+	runs := execrun.NewService(runRepo, tasks, execrun.NewPublisher(mq))
 
 	consumer := ingest.NewConsumer(mq, registry, tasks, log)
 	consumer.Start()
@@ -92,6 +96,7 @@ func run(ctx context.Context) error {
 		handler.NewHealth(map[string]database.Pinger{"database": pool, "broker": mq}, log),
 		httpapi.NewWebhooks(registry, ingest.NewPublisher(mq), log),
 		httpapi.NewTasks(tasks, log),
+		httpapi.NewRuns(runs, cfg.RunsDir, log),
 	)
 	srv := server.New(cfg.HTTPPort, router, log, cfg.ShutdownTimeout)
 

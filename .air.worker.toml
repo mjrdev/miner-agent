@@ -1,0 +1,24 @@
+# Hot reload of the run worker (docker-compose.yml, service worker).
+root = "."
+tmp_dir = "tmp/worker"
+
+[build]
+  cmd = "go build -o ./tmp/worker/worker ./cmd/worker"
+  entrypoint = ["./tmp/worker/worker"]
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "vendor", "migrations", "openspec", ".claude", ".agents", "runs", "build"]
+  exclude_regex = ["_test\\.go$"]
+  # inotify events do not cross bind mounts reliably on WSL2/Docker Desktop.
+  poll = true
+  poll_interval = 500
+  delay = 200
+  # Let the service shut down gracefully on each reload.
+  send_interrupt = true
+  kill_delay = "5s"
+  stop_on_error = true
+
+[log]
+  time = false
+
+[misc]
+  clean_on_exit = true

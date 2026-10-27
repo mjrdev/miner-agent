@@ -17,7 +17,7 @@ import (
 
 func newService(t *testing.T) *task.Service {
 	t.Helper()
-	return task.NewService(postgres.NewRepository(testdb.Pool(t)), tasktest.Catalog())
+	return task.NewService(postgres.NewRepository(testdb.Pool(t)), tasktest.Catalog(), tasktest.NoRuns())
 }
 
 func TestApplyEventIsIdempotent(t *testing.T) {

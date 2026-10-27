@@ -1,5 +1,5 @@
-// Package httpapi exposes the Task domain over HTTP: the webhook endpoints
-// and the CRUD of tasks, project categories and labels.
+// Package httpapi exposes the Task domain over HTTP: the webhook endpoints,
+// the CRUD of tasks, project categories and labels, and the runs of tasks.
 package httpapi
 
 import (
@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jrgomesdev/miner/internal/execution/run"
 	"github.com/jrgomesdev/miner/internal/task"
 )
 
@@ -65,6 +66,9 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, log *slog.Logger, 
 		writeError(w, http.StatusConflict, codeInvalidTransition, err.Error())
 	case errors.Is(err, task.ErrConflict):
 		writeError(w, http.StatusConflict, codeConflict, err.Error())
+	case errors.Is(err, run.ErrUnavailable):
+		log.WarnContext(r.Context(), "run queue unavailable", "error", err)
+		writeError(w, http.StatusServiceUnavailable, codeUnavailable, "run queue unavailable, try again later")
 	default:
 		log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		writeError(w, http.StatusInternalServerError, codeInternal, "internal error")

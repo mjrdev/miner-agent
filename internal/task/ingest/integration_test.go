@@ -111,7 +111,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func TestIngestionCreatesTasksOnce(t *testing.T) {
 	ctx := context.Background()
-	svc := task.NewService(postgres.NewRepository(testdb.Pool(t)), tasktest.Catalog())
+	svc := task.NewService(postgres.NewRepository(testdb.Pool(t)), tasktest.Catalog(), tasktest.NoRuns())
 	b := connectBroker(t)
 	startConsumer(t, b, svc)
 	pub := ingest.NewPublisher(b)

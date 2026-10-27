@@ -28,6 +28,9 @@ type Config struct {
 	// LocalWebhookToken authenticates POST /webhooks/local; empty rejects every request.
 	LocalWebhookToken string
 	ShutdownTimeout   time.Duration
+	// RunsDir holds the run directories written by the worker; the API only
+	// reads the run events from it.
+	RunsDir string
 }
 
 // Load reads the configuration from the process environment.
@@ -43,8 +46,13 @@ func load(getenv func(string) string) (Config, error) {
 		HTTPPort:        defaultHTTPPort,
 		LogLevel:        slog.LevelInfo,
 		ShutdownTimeout: defaultShutdownTimeout,
+		RunsDir:         defaultRunsDir,
 	}
 	var errs []error
+
+	if v := getenv("RUNS_DIR"); v != "" {
+		cfg.RunsDir = v
+	}
 
 	if v := getenv("APP_ENV"); v != "" {
 		cfg.AppEnv = v

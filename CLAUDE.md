@@ -19,13 +19,15 @@ Documentação, specs e ADRs são em português; código, comentários, mensagen
 ## Comandos
 
 ```bash
-make up                 # api (hot reload com air) + migrate + postgres + rabbitmq
+make up                 # imagem do agente + api e worker (hot reload com air) + migrate + postgres + rabbitmq
 make logs               # logs da api
 make test               # go test ./... no host — testes de integração são pulados
 make test-integration   # todos os testes dentro do compose (cria o banco miner_test e o vhost miner_test)
 make fmt                # gofmt -w + go vet
 make lint               # golangci-lint
-make sqlc               # regenera internal/task/postgres/sqlcdb (via container sqlc)
+make sqlc               # regenera os sqlcdb/ de task e de run (via container sqlc)
+make agent-image        # imagem miner-agent:default dos runs (build/agent/)
+make test-agent-image   # testa o entrypoint miner-job na imagem com um agente fake
 make migrate | make migrate-down
 make psql
 ```
@@ -38,7 +40,7 @@ go test ./internal/task -run TestUpdateStatus -v
 docker compose run --rm test go test -count=1 -p 1 -run TestIngestionCreatesTasksOnce ./internal/task/ingest
 ```
 
-Testes de integração dependem de `TEST_DATABASE_URL` / `TEST_RABBITMQ_URL` e chamam `t.Skip` quando ausentes. Eles **apagam os dados** (TRUNCATE nas tabelas, purge das filas) e compartilham banco e vhost, por isso rodam com `-p 1`. Use `testdb.Pool(t)` para obter um pool migrado e limpo.
+Testes de integração dependem de `TEST_DATABASE_URL` / `TEST_RABBITMQ_URL` e chamam `t.Skip` quando ausentes; os de `internal/execution/host` usam o Docker local e são pulados sem ele (no `make test` do host eles rodam). Eles **apagam os dados** (TRUNCATE nas tabelas, purge das filas) e compartilham banco e vhost, por isso rodam com `-p 1`. Use `testdb.Pool(t)` para obter um pool migrado e limpo.
 
 Postgres no host fica na porta **5433** (`postgres://miner:miner@localhost:5433/miner`); painel do RabbitMQ em `localhost:15672` (`miner`/`miner`).
 
@@ -51,9 +53,17 @@ Composição inteira em `cmd/api/main.go`: config → logger → pool pgx → br
 - `adapter/` — contrato `Adapter` (`Name`/`Verify`/`Parse`) e `Registry`. Provider novo = subpacote novo (hoje só `local/`, autenticado por `X-Webhook-Token`) registrado em `main.go`; não precisa tocar fila, banco nem HTTP.
 - `ingest/` — topologia, `Publisher` e `Consumer`.
 - `postgres/` — implementação do `Repository` com sqlc.
-- `httpapi/` — handlers de `/webhooks`, `/tasks`, `/project-categories`, `/labels`, `/execution-options`. Dependem do `*task.Service` concreto; os testes usam o service real com o repositório em memória e o catálogo de `tasktest/` (`tasktest.Catalog()`: `claude` real + agente fake).
+- `httpapi/` — handlers de `/webhooks`, `/tasks`, `/project-categories`, `/labels`, `/execution-options` e dos runs (`/tasks/{id}/runs`, `/runs/...`). Dependem do `*task.Service` concreto; os testes usam o service real com o repositório em memória e o catálogo de `tasktest/` (`tasktest.Catalog()`: `claude` real + agente fake).
 
-**Execução em `internal/execution/`** (ADR-0013): folha do grafo — **não importa `task`**; o `task` importa ele. Contrato `Agent` (`Name`/`Models`, cada `Model` com `Efforts` ordenados) e `Catalog` (agentes + nomes de runners, hoje só `host`), montado em `main.go` e passado a `task.NewService(repo, catalog)`. Agente novo = subpacote novo (hoje `claude/`, com os aliases `fable`/`opus`/`sonnet`). O catálogo é estático em código.
+**Execução em `internal/execution/`** (ADR-0013): folha do grafo — **não importa `task`**; o `task` importa ele. Contratos `Agent` (`Name`/`Models`/`Command`/`Credential`) e `Runner` (`Run`/`Cleanup`), e o `Catalog` (agentes + nomes de runners, hoje só `host`). O catálogo é estático em código e montado **duas vezes**, em `cmd/api` e em `cmd/worker` — mantenha os dois iguais. Agente novo = subpacote novo (hoje `claude/`).
+
+**Runs** (ADR-0014, ADR-0015):
+- `execution/run` importa `task` e `execution`. Tem a entidade Run, o `Service` (Start/Cancel), a fila `tasks.runs` e o `Guard`. O `task` só conhece a porta `task.RunGuard` (`task.NewService(repo, catalog, runs)`; nos testes, `tasktest.NoRuns()`), que bloqueia `PATCH` de status e `DELETE` com run ativo e cancela o run quando a task é cancelada.
+- O banco é a fonte da verdade: as transições do run e o efeito na task (`ready → in_progress` no start; `in_review`/`failed`/`ready` no fim) são SQL condicional na mesma transação do repositório do run. `runtest` imita isso sobre o `tasktest`; o teste de contrato `runtest.Contract` roda contra os dois.
+- `execution/run/worker`: o handler espera um slot (`MAX_CONCURRENT_RUNS`, prefetch 1), faz `MarkRunning` e **dá ack logo**, antes de executar (por causa do `consumer_timeout` do RabbitMQ). Cancelamento por polling de `cancel_requested_at`; na subida, `Recover` falha os runs `running` órfãos e remove containers com label `miner.run`.
+- `execution/host`: único pacote com o SDK do Docker (`moby/moby/client`). Os bind mounts usam caminhos **do host**: o worker descobre `./runs` inspecionando o próprio container (`RUNS_HOST_DIR` sobrescreve).
+- O job (`build/agent/miner-job`) lê `prompt.md`/`command.json` do diretório do run, clona, roda o agente e commita; códigos de saída 10 clone, 11 sem mudanças, 12 agente. O `GIT_TOKEN` vai por arquivo apagado antes do agente, nunca por env.
+- Só o serviço `worker` recebe segredos e o `docker.sock`; a api lista explicitamente suas variáveis (sem `env_file`) e monta `./runs` só leitura para servir os eventos.
 
 Pacotes fora de domínio (`broker`, `database`, `server`, `config`, `logger`, `handler`) ficam direto em `internal/`. Roteamento usa `net/http.ServeMux` com middlewares próprios (sem framework); logs JSON com `log/slog`; config só por variáveis de ambiente.
 
@@ -65,4 +75,4 @@ A idempotência vem de `InsertTaskIfAbsent` por `(provider, external_id)`: reent
 
 **Regras de domínio:** campos do provider (título, descrição, URL) só são editáveis no CRUD para tasks `local`; campos da pessoa usuária são instruções adicionais, labels, categoria, configuração de execução (`agent`/`model`/`effort`/`runner`) e status. Transições de status ficam no pacote `task` e uma inválida vira `409 invalid_transition`. `Repository.UpdateTask`/`UpdateCategory` recebem uma função de mutação aplicada atomicamente — as regras rodam dentro dela, e ela **não pode consultar o repositório** (deadlock no mutex do `tasktest`); por isso `Service.Update` busca a categoria nova antes. Ordem em `Service.apply`: campos do provider → lock da execução (`in_progress`/`done`/`cancelled`) → aplicação → transição (`409`) → validação no catálogo → pré-requisitos de `ready` (agente, modelo, runner, esforço quando o modelo tem, categoria com `repo_url`; `422` listando o que falta). Erros HTTP seguem `{"error":{"code","message"}}`.
 
-**Banco:** migrações goose em `migrations/` (numeração sequencial, embutidas via `migrations.FS`, aplicadas pelo serviço `migrate` antes da api subir). Queries em `internal/task/postgres/queries/*.sql`; após mudar queries ou migrações rode `make sqlc` e commite o código gerado em `sqlcdb/` (nunca edite à mão).
+**Banco:** migrações goose em `migrations/` (numeração sequencial, embutidas via `migrations.FS`, aplicadas pelo serviço `migrate` antes da api subir). Queries em `internal/task/postgres/queries/` e `internal/execution/run/postgres/queries/` (duas entradas em `sqlc.yaml`); após mudar queries ou migrações rode `make sqlc` e commite o código gerado em `sqlcdb/` (nunca edite à mão). O `testdb` faz `TRUNCATE` de todas as tabelas, incluindo `runs` — inclua tabelas novas lá.

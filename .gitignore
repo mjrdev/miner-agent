@@ -8,3 +8,6 @@
 
 # Local environment
 .env
+
+# Run directories written by the worker (workspaces and agent events)
+/runs/

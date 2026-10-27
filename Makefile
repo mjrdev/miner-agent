@@ -4,12 +4,21 @@ COMPOSE ?= docker compose
 IMAGE   ?= miner-api
 SQLC    ?= sqlc/sqlc:1.30.0
 
-.PHONY: help up down reset logs ps psql migrate migrate-down sqlc test test-integration fmt lint build
+AGENT_IMAGE ?= miner-agent:default
+
+.PHONY: help agent-image test-agent-image up down reset logs ps psql migrate migrate-down sqlc test test-integration fmt lint build
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-16s %s\n", $$1, $$2}'
 
-up: ## Build and start the api and postgres in the background
+agent-image: ## Build the default image the runs execute in
+	docker build -t $(AGENT_IMAGE) build/agent
+
+test-agent-image: agent-image ## Check the run entrypoint of the agent image with a fake agent
+	build/agent/test.sh $(AGENT_IMAGE)
+
+up: agent-image ## Build the agent image and start the stack in the background
+	@mkdir -p runs
 	$(COMPOSE) up -d --build
 
 down: ## Stop the stack, keeping database data

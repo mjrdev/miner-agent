@@ -16,6 +16,7 @@ func TestStatusTransitions(t *testing.T) {
 		{StatusReady, StatusCancelled}:      true,
 		{StatusInProgress, StatusInReview}:  true,
 		{StatusInProgress, StatusFailed}:    true,
+		{StatusInProgress, StatusReady}:     true,
 		{StatusInProgress, StatusCancelled}: true,
 		{StatusInReview, StatusDone}:        true,
 		{StatusInReview, StatusReady}:       true,
