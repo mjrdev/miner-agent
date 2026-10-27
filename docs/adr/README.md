@@ -38,3 +38,5 @@ ADRs aceitos não são reescritos. Para mudar uma decisão, crie um ADR novo que
 | [0011](0011-acesso-ao-banco-com-codigo-gerado-pelo-sqlc.md) | Acesso ao banco com código gerado pelo sqlc | Aceito | 2026-10-22 |
 | [0012](0012-migracoes-com-goose-e-servico-migrate-no-compose.md) | Migrações com goose e serviço `migrate` no compose | Aceito | 2026-10-22 |
 | [0013](0013-dominio-execution-com-catalogo-de-agentes-em-codigo.md) | Domínio execution com catálogo de agentes em código | Aceito | 2026-10-26 |
+| [0014](0014-worker-com-acesso-ao-docker-para-executar-os-runs.md) | Worker com acesso ao Docker para executar os runs | Aceito | 2026-10-26 |
+| [0015](0015-run-como-fonte-da-verdade-da-execucao.md) | Run como fonte da verdade da execução | Aceito | 2026-10-26 |
