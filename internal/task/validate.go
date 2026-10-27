@@ -1,6 +1,7 @@
 package task
 
 import (
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -17,9 +18,14 @@ const (
 	maxLabelLen        = 50
 	maxCategoryNameLen = 100
 	maxSlugLen         = 100
+	maxRepoURLLen      = 500
+	maxBranchLen       = 255
 )
 
-var slugPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+var (
+	slugPattern   = regexp.MustCompile(`^[a-z0-9-]+$`)
+	branchPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+)
 
 // NormalizeTitle trims title and checks its length.
 func NormalizeTitle(title string) (string, error) {
@@ -122,4 +128,28 @@ func Slugify(name string) string {
 		slug = strings.TrimRight(slug[:maxSlugLen], "-")
 	}
 	return slug
+}
+
+// ValidateRepoURL checks that repoURL is an absolute https URL with host and
+// path and without embedded credentials.
+func ValidateRepoURL(repoURL string) error {
+	u, err := url.Parse(repoURL)
+	if err != nil || len(repoURL) > maxRepoURLLen || u.Scheme != "https" || u.Host == "" ||
+		strings.Trim(u.Path, "/") == "" || u.User != nil {
+		return invalid("repo_url",
+			"must be an https URL with host and path, without credentials, of at most %d characters", maxRepoURLLen)
+	}
+	return nil
+}
+
+// ValidateBaseBranch checks that branch is a safe git branch name.
+func ValidateBaseBranch(branch string) error {
+	if len(branch) > maxBranchLen || !branchPattern.MatchString(branch) ||
+		strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "/") ||
+		strings.HasSuffix(branch, "/") || strings.Contains(branch, "..") {
+		return invalid("base_branch",
+			"must have between 1 and %d letters, digits, '.', '_', '-' or '/', "+
+				"not start with '-' or '/', not end with '/' and not contain '..'", maxBranchLen)
+	}
+	return nil
 }

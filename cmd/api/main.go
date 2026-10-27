@@ -11,6 +11,8 @@ import (
 	"github.com/jrgomesdev/miner/internal/broker"
 	"github.com/jrgomesdev/miner/internal/config"
 	"github.com/jrgomesdev/miner/internal/database"
+	"github.com/jrgomesdev/miner/internal/execution"
+	"github.com/jrgomesdev/miner/internal/execution/claude"
 	"github.com/jrgomesdev/miner/internal/handler"
 	"github.com/jrgomesdev/miner/internal/logger"
 	"github.com/jrgomesdev/miner/internal/server"
@@ -71,7 +73,8 @@ func run(ctx context.Context) error {
 		log.Warn("LOCAL_WEBHOOK_TOKEN is empty: the local webhook will reject every request")
 	}
 	registry := adapter.NewRegistry(local.New(cfg.LocalWebhookToken))
-	tasks := task.NewService(postgres.NewRepository(pool))
+	catalog := execution.NewCatalog([]execution.Agent{claude.New()}, []string{"host"})
+	tasks := task.NewService(postgres.NewRepository(pool), catalog)
 
 	consumer := ingest.NewConsumer(mq, registry, tasks, log)
 	consumer.Start()

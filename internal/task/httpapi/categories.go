@@ -14,6 +14,8 @@ type categoryResponse struct {
 	Name        string    `json:"name"`
 	Slug        string    `json:"slug"`
 	Description string    `json:"description"`
+	RepoURL     *string   `json:"repo_url"`
+	BaseBranch  string    `json:"base_branch"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -24,15 +26,19 @@ func toCategoryResponse(c task.ProjectCategory) categoryResponse {
 		Name:        c.Name,
 		Slug:        c.Slug,
 		Description: c.Description,
+		RepoURL:     c.RepoURL,
+		BaseBranch:  c.BaseBranch,
 		CreatedAt:   c.CreatedAt,
 		UpdatedAt:   c.UpdatedAt,
 	}
 }
 
 type createCategoryRequest struct {
-	Name        string `json:"name"`
-	Slug        string `json:"slug"`
-	Description string `json:"description"`
+	Name        string  `json:"name"`
+	Slug        string  `json:"slug"`
+	Description string  `json:"description"`
+	RepoURL     *string `json:"repo_url"`
+	BaseBranch  string  `json:"base_branch"`
 }
 
 func (h *Tasks) createCategory(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +50,8 @@ func (h *Tasks) createCategory(w http.ResponseWriter, r *http.Request) {
 		Name:        req.Name,
 		Slug:        req.Slug,
 		Description: req.Description,
+		RepoURL:     req.RepoURL,
+		BaseBranch:  req.BaseBranch,
 	})
 	if err != nil {
 		writeDomainError(w, r, h.log, err)
@@ -83,9 +91,11 @@ func (h *Tasks) getCategory(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateCategoryRequest struct {
-	Name        *string `json:"name"`
-	Slug        *string `json:"slug"`
-	Description *string `json:"description"`
+	Name        *string          `json:"name"`
+	Slug        *string          `json:"slug"`
+	Description *string          `json:"description"`
+	RepoURL     Optional[string] `json:"repo_url"`
+	BaseBranch  Optional[string] `json:"base_branch"`
 }
 
 func (h *Tasks) updateCategory(w http.ResponseWriter, r *http.Request) {
@@ -97,10 +107,17 @@ func (h *Tasks) updateCategory(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.BaseBranch.Set && req.BaseBranch.Value == nil {
+		writeError(w, http.StatusUnprocessableEntity, codeValidationFailed, "base_branch: must not be null")
+		return
+	}
 	c, err := h.svc.UpdateCategory(r.Context(), id, task.CategoryPatch{
 		Name:        req.Name,
 		Slug:        req.Slug,
 		Description: req.Description,
+		SetRepoURL:  req.RepoURL.Set,
+		RepoURL:     req.RepoURL.Value,
+		BaseBranch:  req.BaseBranch.Value,
 	})
 	if err != nil {
 		writeDomainError(w, r, h.log, err)

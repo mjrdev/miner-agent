@@ -22,6 +22,8 @@ type ProjectCategory struct {
 	Description string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	RepoUrl     *string
+	BaseBranch  string
 }
 
 type Task struct {
@@ -37,6 +39,10 @@ type Task struct {
 	RawPayload             []byte
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
+	Agent                  *string
+	Model                  *string
+	Effort                 *string
+	Runner                 *string
 }
 
 type TaskLabel struct {

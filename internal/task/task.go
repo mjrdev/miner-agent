@@ -30,27 +30,44 @@ type Task struct {
 	Labels          []string
 	ProjectCategory *CategoryRef
 	Status          Status
+	Execution       Execution
 	RawPayload      []byte
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
 
-// CategoryRef is the summary of a project category embedded in a task.
-type CategoryRef struct {
-	ID   uuid.UUID
-	Slug string
-	Name string
+// Execution is the user's choice of what runs the task and where. Each field
+// is nil until set and must match the execution catalog.
+type Execution struct {
+	Agent  *string
+	Model  *string
+	Effort *string
+	Runner *string
 }
 
-// ProjectCategory groups tasks by project.
+// CategoryRef is the summary of a project category embedded in a task.
+type CategoryRef struct {
+	ID      uuid.UUID
+	Slug    string
+	Name    string
+	RepoURL *string
+}
+
+// ProjectCategory groups tasks by project. RepoURL is the repository the
+// agent clones, and BaseBranch the branch it starts from.
 type ProjectCategory struct {
 	ID          uuid.UUID
 	Name        string
 	Slug        string
 	Description string
+	RepoURL     *string
+	BaseBranch  string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
+
+// DefaultBaseBranch is the base branch of a category created without one.
+const DefaultBaseBranch = "main"
 
 // Status is the lifecycle state of a task.
 type Status string
@@ -80,6 +97,12 @@ var transitions = map[Status][]Status{
 func (s Status) Valid() bool {
 	_, ok := transitions[s]
 	return ok
+}
+
+// locksExecution reports whether the execution configuration of a task in s
+// is frozen: the task is running or has ended.
+func (s Status) locksExecution() bool {
+	return s == StatusInProgress || s == StatusDone || s == StatusCancelled
 }
 
 // CanTransitionTo reports whether a task may move from s to to. Staying in the

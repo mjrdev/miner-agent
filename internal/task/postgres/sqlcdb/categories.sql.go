@@ -25,7 +25,7 @@ func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) (int64, erro
 }
 
 const getCategory = `-- name: GetCategory :one
-SELECT id, name, slug, description, created_at, updated_at
+SELECT id, name, slug, description, created_at, updated_at, repo_url, base_branch
 FROM project_categories
 WHERE id = $1
 `
@@ -40,12 +40,14 @@ func (q *Queries) GetCategory(ctx context.Context, id uuid.UUID) (ProjectCategor
 		&i.Description,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RepoUrl,
+		&i.BaseBranch,
 	)
 	return i, err
 }
 
 const getCategoryForUpdate = `-- name: GetCategoryForUpdate :one
-SELECT id, name, slug, description, created_at, updated_at
+SELECT id, name, slug, description, created_at, updated_at, repo_url, base_branch
 FROM project_categories
 WHERE id = $1
 FOR UPDATE
@@ -61,13 +63,15 @@ func (q *Queries) GetCategoryForUpdate(ctx context.Context, id uuid.UUID) (Proje
 		&i.Description,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RepoUrl,
+		&i.BaseBranch,
 	)
 	return i, err
 }
 
 const insertCategory = `-- name: InsertCategory :exec
-INSERT INTO project_categories (id, name, slug, description, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO project_categories (id, name, slug, description, repo_url, base_branch, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type InsertCategoryParams struct {
@@ -75,6 +79,8 @@ type InsertCategoryParams struct {
 	Name        string
 	Slug        string
 	Description string
+	RepoUrl     *string
+	BaseBranch  string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -85,6 +91,8 @@ func (q *Queries) InsertCategory(ctx context.Context, arg InsertCategoryParams) 
 		arg.Name,
 		arg.Slug,
 		arg.Description,
+		arg.RepoUrl,
+		arg.BaseBranch,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -92,7 +100,7 @@ func (q *Queries) InsertCategory(ctx context.Context, arg InsertCategoryParams) 
 }
 
 const listCategories = `-- name: ListCategories :many
-SELECT id, name, slug, description, created_at, updated_at
+SELECT id, name, slug, description, created_at, updated_at, repo_url, base_branch
 FROM project_categories
 ORDER BY name, id
 `
@@ -113,6 +121,8 @@ func (q *Queries) ListCategories(ctx context.Context) ([]ProjectCategory, error)
 			&i.Description,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RepoUrl,
+			&i.BaseBranch,
 		); err != nil {
 			return nil, err
 		}
@@ -126,7 +136,7 @@ func (q *Queries) ListCategories(ctx context.Context) ([]ProjectCategory, error)
 
 const updateCategory = `-- name: UpdateCategory :exec
 UPDATE project_categories
-SET name = $2, slug = $3, description = $4, updated_at = $5
+SET name = $2, slug = $3, description = $4, repo_url = $5, base_branch = $6, updated_at = $7
 WHERE id = $1
 `
 
@@ -135,6 +145,8 @@ type UpdateCategoryParams struct {
 	Name        string
 	Slug        string
 	Description string
+	RepoUrl     *string
+	BaseBranch  string
 	UpdatedAt   time.Time
 }
 
@@ -144,6 +156,8 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 		arg.Name,
 		arg.Slug,
 		arg.Description,
+		arg.RepoUrl,
+		arg.BaseBranch,
 		arg.UpdatedAt,
 	)
 	return err

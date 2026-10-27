@@ -59,8 +59,8 @@ const getTask = `-- name: GetTask :one
 SELECT
     t.id, t.provider, t.external_id, t.external_url, t.title, t.description,
     t.additional_instructions, t.project_category_id, t.status,
-    t.created_at, t.updated_at,
-    c.slug AS category_slug, c.name AS category_name
+    t.agent, t.model, t.effort, t.runner, t.created_at, t.updated_at,
+    c.slug AS category_slug, c.name AS category_name, c.repo_url AS category_repo_url
 FROM tasks t
 LEFT JOIN project_categories c ON c.id = t.project_category_id
 WHERE t.id = $1
@@ -76,10 +76,15 @@ type GetTaskRow struct {
 	AdditionalInstructions []string
 	ProjectCategoryID      *uuid.UUID
 	Status                 string
+	Agent                  *string
+	Model                  *string
+	Effort                 *string
+	Runner                 *string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 	CategorySlug           *string
 	CategoryName           *string
+	CategoryRepoUrl        *string
 }
 
 func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (GetTaskRow, error) {
@@ -95,10 +100,15 @@ func (q *Queries) GetTask(ctx context.Context, id uuid.UUID) (GetTaskRow, error)
 		&i.AdditionalInstructions,
 		&i.ProjectCategoryID,
 		&i.Status,
+		&i.Agent,
+		&i.Model,
+		&i.Effort,
+		&i.Runner,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CategorySlug,
 		&i.CategoryName,
+		&i.CategoryRepoUrl,
 	)
 	return i, err
 }
@@ -107,9 +117,9 @@ const insertTask = `-- name: InsertTask :exec
 INSERT INTO tasks (
     id, provider, external_id, external_url, title, description,
     additional_instructions, project_category_id, status, raw_payload,
-    created_at, updated_at
+    agent, model, effort, runner, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )
 `
 
@@ -124,6 +134,10 @@ type InsertTaskParams struct {
 	ProjectCategoryID      *uuid.UUID
 	Status                 string
 	RawPayload             []byte
+	Agent                  *string
+	Model                  *string
+	Effort                 *string
+	Runner                 *string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 }
@@ -140,6 +154,10 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) error {
 		arg.ProjectCategoryID,
 		arg.Status,
 		arg.RawPayload,
+		arg.Agent,
+		arg.Model,
+		arg.Effort,
+		arg.Runner,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -150,9 +168,9 @@ const insertTaskIfAbsent = `-- name: InsertTaskIfAbsent :execrows
 INSERT INTO tasks (
     id, provider, external_id, external_url, title, description,
     additional_instructions, project_category_id, status, raw_payload,
-    created_at, updated_at
+    agent, model, effort, runner, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )
 ON CONFLICT (provider, external_id) DO NOTHING
 `
@@ -168,6 +186,10 @@ type InsertTaskIfAbsentParams struct {
 	ProjectCategoryID      *uuid.UUID
 	Status                 string
 	RawPayload             []byte
+	Agent                  *string
+	Model                  *string
+	Effort                 *string
+	Runner                 *string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 }
@@ -184,6 +206,10 @@ func (q *Queries) InsertTaskIfAbsent(ctx context.Context, arg InsertTaskIfAbsent
 		arg.ProjectCategoryID,
 		arg.Status,
 		arg.RawPayload,
+		arg.Agent,
+		arg.Model,
+		arg.Effort,
+		arg.Runner,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -197,8 +223,8 @@ const listTasks = `-- name: ListTasks :many
 SELECT
     t.id, t.provider, t.external_id, t.external_url, t.title, t.description,
     t.additional_instructions, t.project_category_id, t.status,
-    t.created_at, t.updated_at,
-    c.slug AS category_slug, c.name AS category_name
+    t.agent, t.model, t.effort, t.runner, t.created_at, t.updated_at,
+    c.slug AS category_slug, c.name AS category_name, c.repo_url AS category_repo_url
 FROM tasks t
 LEFT JOIN project_categories c ON c.id = t.project_category_id
 WHERE ($1::text IS NULL OR t.status = $1)
@@ -231,10 +257,15 @@ type ListTasksRow struct {
 	AdditionalInstructions []string
 	ProjectCategoryID      *uuid.UUID
 	Status                 string
+	Agent                  *string
+	Model                  *string
+	Effort                 *string
+	Runner                 *string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 	CategorySlug           *string
 	CategoryName           *string
+	CategoryRepoUrl        *string
 }
 
 func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]ListTasksRow, error) {
@@ -263,10 +294,15 @@ func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]ListTas
 			&i.AdditionalInstructions,
 			&i.ProjectCategoryID,
 			&i.Status,
+			&i.Agent,
+			&i.Model,
+			&i.Effort,
+			&i.Runner,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CategorySlug,
 			&i.CategoryName,
+			&i.CategoryRepoUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -295,7 +331,11 @@ SET title = $2,
     additional_instructions = $4,
     project_category_id = $5,
     status = $6,
-    updated_at = $7
+    agent = $7,
+    model = $8,
+    effort = $9,
+    runner = $10,
+    updated_at = $11
 WHERE id = $1
 `
 
@@ -306,6 +346,10 @@ type UpdateTaskParams struct {
 	AdditionalInstructions []string
 	ProjectCategoryID      *uuid.UUID
 	Status                 string
+	Agent                  *string
+	Model                  *string
+	Effort                 *string
+	Runner                 *string
 	UpdatedAt              time.Time
 }
 
@@ -317,6 +361,10 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) error {
 		arg.AdditionalInstructions,
 		arg.ProjectCategoryID,
 		arg.Status,
+		arg.Agent,
+		arg.Model,
+		arg.Effort,
+		arg.Runner,
 		arg.UpdatedAt,
 	)
 	return err

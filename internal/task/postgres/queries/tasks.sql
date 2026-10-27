@@ -2,18 +2,18 @@
 INSERT INTO tasks (
     id, provider, external_id, external_url, title, description,
     additional_instructions, project_category_id, status, raw_payload,
-    created_at, updated_at
+    agent, model, effort, runner, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 );
 
 -- name: InsertTaskIfAbsent :execrows
 INSERT INTO tasks (
     id, provider, external_id, external_url, title, description,
     additional_instructions, project_category_id, status, raw_payload,
-    created_at, updated_at
+    agent, model, effort, runner, created_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 )
 ON CONFLICT (provider, external_id) DO NOTHING;
 
@@ -21,8 +21,8 @@ ON CONFLICT (provider, external_id) DO NOTHING;
 SELECT
     t.id, t.provider, t.external_id, t.external_url, t.title, t.description,
     t.additional_instructions, t.project_category_id, t.status,
-    t.created_at, t.updated_at,
-    c.slug AS category_slug, c.name AS category_name
+    t.agent, t.model, t.effort, t.runner, t.created_at, t.updated_at,
+    c.slug AS category_slug, c.name AS category_name, c.repo_url AS category_repo_url
 FROM tasks t
 LEFT JOIN project_categories c ON c.id = t.project_category_id
 WHERE t.id = $1;
@@ -34,8 +34,8 @@ SELECT id FROM tasks WHERE id = $1 FOR UPDATE;
 SELECT
     t.id, t.provider, t.external_id, t.external_url, t.title, t.description,
     t.additional_instructions, t.project_category_id, t.status,
-    t.created_at, t.updated_at,
-    c.slug AS category_slug, c.name AS category_name
+    t.agent, t.model, t.effort, t.runner, t.created_at, t.updated_at,
+    c.slug AS category_slug, c.name AS category_name, c.repo_url AS category_repo_url
 FROM tasks t
 LEFT JOIN project_categories c ON c.id = t.project_category_id
 WHERE (sqlc.narg('status')::text IS NULL OR t.status = sqlc.narg('status'))
@@ -66,7 +66,11 @@ SET title = $2,
     additional_instructions = $4,
     project_category_id = $5,
     status = $6,
-    updated_at = $7
+    agent = $7,
+    model = $8,
+    effort = $9,
+    runner = $10,
+    updated_at = $11
 WHERE id = $1;
 
 -- name: DeleteTask :execrows

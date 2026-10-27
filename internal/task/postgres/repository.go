@@ -119,6 +119,10 @@ func (r *Repository) UpdateTask(ctx context.Context, id uuid.UUID, fn func(*task
 			AdditionalInstructions: t.AdditionalInstructions,
 			ProjectCategoryID:      categoryID(t.ProjectCategory),
 			Status:                 string(t.Status),
+			Agent:                  t.Execution.Agent,
+			Model:                  t.Execution.Model,
+			Effort:                 t.Execution.Effort,
+			Runner:                 t.Execution.Runner,
 			UpdatedAt:              t.UpdatedAt,
 		})
 		if err != nil {
@@ -160,6 +164,8 @@ func (r *Repository) InsertCategory(ctx context.Context, c task.ProjectCategory)
 		Name:        c.Name,
 		Slug:        c.Slug,
 		Description: c.Description,
+		RepoUrl:     c.RepoURL,
+		BaseBranch:  c.BaseBranch,
 		CreatedAt:   c.CreatedAt,
 		UpdatedAt:   c.UpdatedAt,
 	})
@@ -206,6 +212,8 @@ func (r *Repository) UpdateCategory(
 			Name:        c.Name,
 			Slug:        c.Slug,
 			Description: c.Description,
+			RepoUrl:     c.RepoURL,
+			BaseBranch:  c.BaseBranch,
 			UpdatedAt:   c.UpdatedAt,
 		})
 		return mapCategoryError(err, c.Slug)
@@ -310,6 +318,10 @@ func insertParams(t task.Task) sqlcdb.InsertTaskIfAbsentParams {
 		ProjectCategoryID:      categoryID(t.ProjectCategory),
 		Status:                 string(t.Status),
 		RawPayload:             t.RawPayload,
+		Agent:                  t.Execution.Agent,
+		Model:                  t.Execution.Model,
+		Effort:                 t.Execution.Effort,
+		Runner:                 t.Execution.Runner,
 		CreatedAt:              t.CreatedAt,
 		UpdatedAt:              t.UpdatedAt,
 	}
@@ -333,14 +345,21 @@ func toTask(row sqlcdb.GetTaskRow, labels []string) task.Task {
 		AdditionalInstructions: instructions,
 		Labels:                 labels,
 		Status:                 task.Status(row.Status),
-		CreatedAt:              row.CreatedAt,
-		UpdatedAt:              row.UpdatedAt,
+		Execution: task.Execution{
+			Agent:  row.Agent,
+			Model:  row.Model,
+			Effort: row.Effort,
+			Runner: row.Runner,
+		},
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
 	}
 	if row.ProjectCategoryID != nil {
 		t.ProjectCategory = &task.CategoryRef{
-			ID:   *row.ProjectCategoryID,
-			Slug: deref(row.CategorySlug),
-			Name: deref(row.CategoryName),
+			ID:      *row.ProjectCategoryID,
+			Slug:    deref(row.CategorySlug),
+			Name:    deref(row.CategoryName),
+			RepoURL: row.CategoryRepoUrl,
 		}
 	}
 	return t
@@ -352,6 +371,8 @@ func toCategory(row sqlcdb.ProjectCategory) task.ProjectCategory {
 		Name:        row.Name,
 		Slug:        row.Slug,
 		Description: row.Description,
+		RepoURL:     row.RepoUrl,
+		BaseBranch:  row.BaseBranch,
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
 	}

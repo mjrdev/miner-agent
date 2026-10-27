@@ -4,27 +4,39 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/jrgomesdev/miner/internal/execution"
 )
 
 // Service holds the Task domain rules on top of a Repository.
 type Service struct {
-	repo  Repository
-	now   func() time.Time
-	newID func() uuid.UUID
+	repo    Repository
+	catalog *execution.Catalog
+	now     func() time.Time
+	newID   func() uuid.UUID
 }
 
-// NewService returns a service that stores data in repo.
-func NewService(repo Repository) *Service {
+// NewService returns a service that stores data in repo and validates the
+// execution configuration of tasks against catalog.
+func NewService(repo Repository, catalog *execution.Catalog) *Service {
 	return &Service{
-		repo: repo,
+		repo:    repo,
+		catalog: catalog,
 		// PostgreSQL keeps microseconds; truncating keeps reads equal to writes.
 		now:   func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) },
 		newID: func() uuid.UUID { return uuid.Must(uuid.NewV7()) },
 	}
+}
+
+// ExecutionOptions returns the agents, models, efforts and runners a task may
+// be configured with.
+func (s *Service) ExecutionOptions() execution.Options {
+	return s.catalog.Options()
 }
 
 // CreateInput is the data for a task created directly, without a provider.
@@ -34,6 +46,7 @@ type CreateInput struct {
 	AdditionalInstructions []string
 	Labels                 []string
 	ProjectCategoryID      *uuid.UUID
+	Execution              Execution
 }
 
 // CreateLocal creates a draft task from the local provider whose external id
@@ -55,6 +68,9 @@ func (s *Service) CreateLocal(ctx context.Context, in CreateInput) (Task, error)
 	if err != nil {
 		return Task{}, err
 	}
+	if err := s.validateExecution(in.Execution); err != nil {
+		return Task{}, err
+	}
 
 	now := s.now()
 	id := s.newID()
@@ -67,6 +83,7 @@ func (s *Service) CreateLocal(ctx context.Context, in CreateInput) (Task, error)
 		AdditionalInstructions: instructions,
 		Labels:                 labels,
 		Status:                 StatusDraft,
+		Execution:              in.Execution,
 		CreatedAt:              now,
 		UpdatedAt:              now,
 	}
@@ -91,8 +108,8 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Task, int, error) {
 }
 
 // UpdateInput holds the fields of a partial task update; nil fields are left
-// unchanged. ProjectCategoryID is applied only when SetProjectCategory is true,
-// and a nil value then removes the category.
+// unchanged. ProjectCategoryID and each execution field are applied only when
+// their Set flag is true, and a nil value then clears them.
 type UpdateInput struct {
 	Title                  *string
 	Description            *string
@@ -100,7 +117,29 @@ type UpdateInput struct {
 	Labels                 *[]string
 	SetProjectCategory     bool
 	ProjectCategoryID      *uuid.UUID
+	SetAgent               bool
+	Agent                  *string
+	SetModel               bool
+	Model                  *string
+	SetEffort              bool
+	Effort                 *string
+	SetRunner              bool
+	Runner                 *string
 	Status                 *Status
+}
+
+// executionFields returns the names of the execution fields in the update.
+func (in UpdateInput) executionFields() []string {
+	var fields []string
+	for _, f := range []struct {
+		set  bool
+		name string
+	}{{in.SetAgent, "agent"}, {in.SetModel, "model"}, {in.SetEffort, "effort"}, {in.SetRunner, "runner"}} {
+		if f.set {
+			fields = append(fields, f.name)
+		}
+	}
+	return fields
 }
 
 func (in UpdateInput) empty() bool {
@@ -109,7 +148,8 @@ func (in UpdateInput) empty() bool {
 
 // Update applies a partial update. Title and description belong to the
 // provider and may only change on local tasks; status changes must follow
-// the lifecycle.
+// the lifecycle; the execution configuration is locked while the task runs or
+// after it ends, and a ready task must be fully configured.
 func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (Task, error) {
 	if in.empty() {
 		return s.repo.GetTask(ctx, id)
@@ -118,8 +158,22 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (Tas
 		return Task{}, invalid("status", "unknown status %q", *in.Status)
 	}
 
+	// The new category is loaded here because the mutation below runs while
+	// the repository holds the task and must not query it.
+	var category *CategoryRef
+	if in.SetProjectCategory && in.ProjectCategoryID != nil {
+		c, err := s.repo.GetCategory(ctx, *in.ProjectCategoryID)
+		if errors.Is(err, ErrNotFound) {
+			return Task{}, categoryNotFoundAsValidation(ErrCategoryNotFound)
+		}
+		if err != nil {
+			return Task{}, err
+		}
+		category = &CategoryRef{ID: c.ID, Slug: c.Slug, Name: c.Name, RepoURL: c.RepoURL}
+	}
+
 	t, err := s.repo.UpdateTask(ctx, id, func(t *Task) error {
-		return s.apply(t, in)
+		return s.apply(t, in, category)
 	})
 	if err != nil {
 		return Task{}, categoryNotFoundAsValidation(err)
@@ -127,11 +181,16 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (Tas
 	return t, nil
 }
 
-// apply validates in against t and changes t in place.
-func (s *Service) apply(t *Task, in UpdateInput) error {
+// apply validates in against t and changes t in place. category is the
+// resolved category set by in, if any.
+func (s *Service) apply(t *Task, in UpdateInput, category *CategoryRef) error {
 	touchesProviderFields := in.Title != nil || in.Description != nil
 	if touchesProviderFields && t.Provider != ProviderLocal {
 		return fmt.Errorf("%w: title and description belong to provider %q", ErrFieldNotEditable, t.Provider)
+	}
+	executionFields := in.executionFields()
+	if len(executionFields) > 0 && t.Status.locksExecution() {
+		return invalid(executionFields[0], "execution configuration cannot change while the task is %s", t.Status)
 	}
 
 	if in.Title != nil {
@@ -163,10 +222,19 @@ func (s *Service) apply(t *Task, in UpdateInput) error {
 		t.Labels = labels
 	}
 	if in.SetProjectCategory {
-		t.ProjectCategory = nil
-		if in.ProjectCategoryID != nil {
-			t.ProjectCategory = &CategoryRef{ID: *in.ProjectCategoryID}
-		}
+		t.ProjectCategory = category
+	}
+	if in.SetAgent {
+		t.Execution.Agent = in.Agent
+	}
+	if in.SetModel {
+		t.Execution.Model = in.Model
+	}
+	if in.SetEffort {
+		t.Execution.Effort = in.Effort
+	}
+	if in.SetRunner {
+		t.Execution.Runner = in.Runner
 	}
 	if in.Status != nil && *in.Status != t.Status {
 		if !t.Status.CanTransitionTo(*in.Status) {
@@ -174,8 +242,87 @@ func (s *Service) apply(t *Task, in UpdateInput) error {
 		}
 		t.Status = *in.Status
 	}
+	// A model removed from the catalog only fails when the configuration is
+	// touched or the task must be ready, so the task stays editable otherwise.
+	if len(executionFields) > 0 || t.Status == StatusReady {
+		if err := s.validateExecution(t.Execution); err != nil {
+			return err
+		}
+	}
+	if t.Status == StatusReady {
+		if err := s.checkReady(t); err != nil {
+			return err
+		}
+	}
 
 	t.UpdatedAt = s.now()
+	return nil
+}
+
+// validateExecution checks e against the catalog: each field set must exist,
+// within the agent and model chosen.
+func (s *Service) validateExecution(e Execution) error {
+	var agent execution.Agent
+	if e.Agent != nil {
+		a, ok := s.catalog.Agent(*e.Agent)
+		if !ok {
+			return invalid("agent", "unknown agent %q", *e.Agent)
+		}
+		agent = a
+	}
+	var model *execution.Model
+	if e.Model != nil {
+		if agent == nil {
+			return invalid("model", "requires an agent")
+		}
+		m, ok := execution.FindModel(agent, *e.Model)
+		if !ok {
+			return invalid("model", "agent %q has no model %q", agent.Name(), *e.Model)
+		}
+		model = &m
+	}
+	if e.Effort != nil {
+		if model == nil {
+			return invalid("effort", "requires a model")
+		}
+		if !slices.Contains(model.Efforts, *e.Effort) {
+			return invalid("effort", "model %q has no effort %q", model.ID, *e.Effort)
+		}
+	}
+	if e.Runner != nil && !s.catalog.HasRunner(*e.Runner) {
+		return invalid("runner", "unknown runner %q", *e.Runner)
+	}
+	return nil
+}
+
+// checkReady reports every missing prerequisite of a ready task. The
+// execution configuration must already be valid.
+func (s *Service) checkReady(t *Task) error {
+	var missing []string
+	e := t.Execution
+	if e.Agent == nil {
+		missing = append(missing, "agent")
+	}
+	if e.Model == nil {
+		missing = append(missing, "model")
+	} else if e.Effort == nil {
+		agent, _ := s.catalog.Agent(*e.Agent)
+		if m, _ := execution.FindModel(agent, *e.Model); len(m.Efforts) > 0 {
+			missing = append(missing, "effort")
+		}
+	}
+	if e.Runner == nil {
+		missing = append(missing, "runner")
+	}
+	switch {
+	case t.ProjectCategory == nil:
+		missing = append(missing, "project_category")
+	case t.ProjectCategory.RepoURL == nil:
+		missing = append(missing, "project_category.repo_url")
+	}
+	if len(missing) > 0 {
+		return invalid("status", "task cannot be ready: missing %s", strings.Join(missing, ", "))
+	}
 	return nil
 }
 
@@ -228,11 +375,13 @@ func (s *Service) ListLabels(ctx context.Context) ([]string, error) {
 }
 
 // CategoryInput is the data for a new project category. An empty Slug is
-// derived from Name.
+// derived from Name, and an empty BaseBranch is DefaultBaseBranch.
 type CategoryInput struct {
 	Name        string
 	Slug        string
 	Description string
+	RepoURL     *string
+	BaseBranch  string
 }
 
 // CreateCategory creates a project category with a unique slug.
@@ -248,6 +397,18 @@ func (s *Service) CreateCategory(ctx context.Context, in CategoryInput) (Project
 	if err := ValidateSlug(slug); err != nil {
 		return ProjectCategory{}, err
 	}
+	if in.RepoURL != nil {
+		if err := ValidateRepoURL(*in.RepoURL); err != nil {
+			return ProjectCategory{}, err
+		}
+	}
+	branch := in.BaseBranch
+	if branch == "" {
+		branch = DefaultBaseBranch
+	}
+	if err := ValidateBaseBranch(branch); err != nil {
+		return ProjectCategory{}, err
+	}
 
 	now := s.now()
 	c := ProjectCategory{
@@ -255,6 +416,8 @@ func (s *Service) CreateCategory(ctx context.Context, in CategoryInput) (Project
 		Name:        name,
 		Slug:        slug,
 		Description: strings.TrimSpace(in.Description),
+		RepoURL:     in.RepoURL,
+		BaseBranch:  branch,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -275,15 +438,29 @@ func (s *Service) ListCategories(ctx context.Context) ([]ProjectCategory, error)
 }
 
 // CategoryPatch holds the fields of a partial category update; nil fields are
-// left unchanged.
+// left unchanged. RepoURL is applied only when SetRepoURL is true, and a nil
+// value then removes the repository.
 type CategoryPatch struct {
 	Name        *string
 	Slug        *string
 	Description *string
+	SetRepoURL  bool
+	RepoURL     *string
+	BaseBranch  *string
 }
 
 // UpdateCategory applies a partial update with the same rules as creation.
+// The repository cannot be removed while a task of the category is ready.
 func (s *Service) UpdateCategory(ctx context.Context, id uuid.UUID, p CategoryPatch) (ProjectCategory, error) {
+	if p.SetRepoURL && p.RepoURL == nil {
+		_, ready, err := s.repo.ListTasks(ctx, ListFilter{ProjectCategoryID: &id, Status: new(StatusReady), Limit: 1})
+		if err != nil {
+			return ProjectCategory{}, err
+		}
+		if ready > 0 {
+			return ProjectCategory{}, fmt.Errorf("%w: project category has ready tasks that need its repo_url", ErrConflict)
+		}
+	}
 	return s.repo.UpdateCategory(ctx, id, func(c *ProjectCategory) error {
 		if p.Name != nil {
 			name, err := NormalizeCategoryName(*p.Name)
@@ -300,6 +477,20 @@ func (s *Service) UpdateCategory(ctx context.Context, id uuid.UUID, p CategoryPa
 		}
 		if p.Description != nil {
 			c.Description = strings.TrimSpace(*p.Description)
+		}
+		if p.SetRepoURL {
+			if p.RepoURL != nil {
+				if err := ValidateRepoURL(*p.RepoURL); err != nil {
+					return err
+				}
+			}
+			c.RepoURL = p.RepoURL
+		}
+		if p.BaseBranch != nil {
+			if err := ValidateBaseBranch(*p.BaseBranch); err != nil {
+				return err
+			}
+			c.BaseBranch = *p.BaseBranch
 		}
 		c.UpdatedAt = s.now()
 		return nil
