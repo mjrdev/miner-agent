@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Runs one task in the run directory mounted at /job: clone the repository,
+# create the run branch, run the agent and commit what it changed.
+#
+# Input: REPO_URL, BASE_BRANCH, BRANCH, COMMIT_MESSAGE, /job/prompt.md,
+# /job/command.json (the agent argv) and, optionally, /job/git-token.
+# Output: /job/workspace, /job/events.jsonl, /job/agent_exit, /job/diff.patch.
+# Exit codes: 0 commit made, 10 clone failed, 11 no changes, 12 agent failed.
+set -uo pipefail
+
+job=${JOB_DIR:-/job}
+: "${REPO_URL:?}" "${BASE_BRANCH:?}" "${BRANCH:?}" "${COMMIT_MESSAGE:?}"
+
+export HOME="$job/home"
+mkdir -p "$HOME"
+export GIT_TERMINAL_PROMPT=0
+export GIT_AUTHOR_NAME=miner GIT_AUTHOR_EMAIL=miner@localhost
+export GIT_COMMITTER_NAME=miner GIT_COMMITTER_EMAIL=miner@localhost
+
+# The token is read from a file, never from the environment, so the agent
+# cannot find it in /proc; the file is gone before the agent starts.
+token_file="$job/git-token"
+askpass="$HOME/.git-askpass"
+if [ -s "$token_file" ]; then
+  printf '#!/bin/sh\ncase "$1" in Username*) echo x-access-token ;; *) cat %q ;; esac\n' "$token_file" > "$askpass"
+  chmod 700 "$askpass"
+  export GIT_ASKPASS="$askpass"
+fi
+git clone --quiet --single-branch --branch "$BASE_BRANCH" -- "$REPO_URL" "$job/workspace" 2> "$job/clone.log"
+clone=$?
+rm -f "$token_file" "$askpass"
+unset GIT_ASKPASS
+if [ "$clone" -ne 0 ]; then
+  cat "$job/clone.log" >&2
+  exit 10
+fi
+
+cd "$job/workspace" || exit 10
+git switch --quiet -c "$BRANCH" || exit 1
+
+argv=()
+while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(jq -j '.[] + "\u0000"' "$job/command.json")
+"${argv[@]}" < "$job/prompt.md" > "$job/events.jsonl"
+agent=$?
+echo "$agent" > "$job/agent_exit"
+if [ "$agent" -ne 0 ]; then
+  exit 12
+fi
+
+git add -A
+if git diff --cached --quiet; then
+  exit 11
+fi
+git commit --quiet -m "$COMMIT_MESSAGE" || exit 1
+git diff "origin/$BASE_BRANCH..HEAD" > "$job/diff.patch"

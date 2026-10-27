@@ -5,7 +5,7 @@ tmp_dir = "tmp"
   cmd = "go build -o ./tmp/api ./cmd/api"
   entrypoint = ["./tmp/api"]
   include_ext = ["go"]
-  exclude_dir = ["tmp", "vendor", "migrations", "openspec", ".claude", ".agents"]
+  exclude_dir = ["tmp", "vendor", "migrations", "openspec", ".claude", ".agents", "runs", "build"]
   exclude_regex = ["_test\\.go$"]
   # inotify events do not cross bind mounts reliably on WSL2/Docker Desktop.
   poll = true

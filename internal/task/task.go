@@ -86,7 +86,7 @@ const (
 var transitions = map[Status][]Status{
 	StatusDraft:      {StatusReady, StatusCancelled},
 	StatusReady:      {StatusInProgress, StatusDraft, StatusCancelled},
-	StatusInProgress: {StatusInReview, StatusFailed, StatusCancelled},
+	StatusInProgress: {StatusInReview, StatusFailed, StatusReady, StatusCancelled},
 	StatusInReview:   {StatusDone, StatusReady, StatusCancelled},
 	StatusFailed:     {StatusReady, StatusCancelled},
 	StatusDone:       nil,

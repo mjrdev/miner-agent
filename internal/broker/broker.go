@@ -29,6 +29,18 @@ var ErrNotConnected = errors.New("broker: not connected")
 // runs on every (re)connection and must be idempotent.
 type SetupFunc func(ch *amqp.Channel) error
 
+// Setups combines setups into one SetupFunc that runs them in order.
+func Setups(setups ...SetupFunc) SetupFunc {
+	return func(ch *amqp.Channel) error {
+		for _, setup := range setups {
+			if err := setup(ch); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
 // Broker is a RabbitMQ connection that reconnects by itself.
 type Broker struct {
 	url   string

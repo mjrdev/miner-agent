@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Label struct {
@@ -24,6 +25,30 @@ type ProjectCategory struct {
 	UpdatedAt   time.Time
 	RepoUrl     *string
 	BaseBranch  string
+}
+
+type Run struct {
+	ID                uuid.UUID
+	TaskID            uuid.UUID
+	Status            string
+	Agent             string
+	Model             string
+	Effort            *string
+	Runner            string
+	RepoUrl           string
+	BaseBranch        string
+	Branch            string
+	AuthMethod        *string
+	EffectiveModel    *string
+	CostUsd           pgtype.Numeric
+	NumTurns          *int32
+	ExitCode          *int32
+	Error             *string
+	Diff              *string
+	CancelRequestedAt pgtype.Timestamptz
+	CreatedAt         time.Time
+	StartedAt         pgtype.Timestamptz
+	FinishedAt        pgtype.Timestamptz
 }
 
 type Task struct {

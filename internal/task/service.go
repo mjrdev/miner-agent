@@ -17,16 +17,27 @@ import (
 type Service struct {
 	repo    Repository
 	catalog *execution.Catalog
+	runs    RunGuard
 	now     func() time.Time
 	newID   func() uuid.UUID
 }
 
-// NewService returns a service that stores data in repo and validates the
-// execution configuration of tasks against catalog.
-func NewService(repo Repository, catalog *execution.Catalog) *Service {
+// RunGuard tells the task rules about the runs of a task, which belong to
+// another package. While a task has an active run, its status follows the run.
+type RunGuard interface {
+	HasActiveRun(ctx context.Context, taskID uuid.UUID) (bool, error)
+	// CancelActiveRun cancels the active run of a task, if any.
+	CancelActiveRun(ctx context.Context, taskID uuid.UUID) error
+}
+
+// NewService returns a service that stores data in repo, validates the
+// execution configuration of tasks against catalog and consults runs before
+// changing the status of a task or deleting it.
+func NewService(repo Repository, catalog *execution.Catalog, runs RunGuard) *Service {
 	return &Service{
 		repo:    repo,
 		catalog: catalog,
+		runs:    runs,
 		// PostgreSQL keeps microseconds; truncating keeps reads equal to writes.
 		now:   func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) },
 		newID: func() uuid.UUID { return uuid.Must(uuid.NewV7()) },
@@ -157,6 +168,11 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (Tas
 	if in.Status != nil && !in.Status.Valid() {
 		return Task{}, invalid("status", "unknown status %q", *in.Status)
 	}
+	if in.Status != nil && *in.Status != StatusCancelled {
+		if err := s.checkNoActiveRun(ctx, id, "status follows the active run"); err != nil {
+			return Task{}, err
+		}
+	}
 
 	// The new category is loaded here because the mutation below runs while
 	// the repository holds the task and must not query it.
@@ -177,6 +193,11 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (Tas
 	})
 	if err != nil {
 		return Task{}, categoryNotFoundAsValidation(err)
+	}
+	if t.Status == StatusCancelled {
+		if err := s.runs.CancelActiveRun(ctx, id); err != nil {
+			return Task{}, fmt.Errorf("cancel active run: %w", err)
+		}
 	}
 	return t, nil
 }
@@ -328,7 +349,36 @@ func (s *Service) checkReady(t *Task) error {
 
 // Delete removes the task with id.
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
+	if err := s.checkNoActiveRun(ctx, id, "task has an active run"); err != nil {
+		return err
+	}
 	return s.repo.DeleteTask(ctx, id)
+}
+
+// checkNoActiveRun returns ErrConflict with reason when the task has an
+// active run.
+func (s *Service) checkNoActiveRun(ctx context.Context, id uuid.UUID, reason string) error {
+	active, err := s.runs.HasActiveRun(ctx, id)
+	if err != nil {
+		return fmt.Errorf("check active run: %w", err)
+	}
+	if active {
+		return fmt.Errorf("%w: %s", ErrConflict, reason)
+	}
+	return nil
+}
+
+// CheckRunnable reports why t cannot start a run: it must be ready, with an
+// execution configuration that is still in the catalog and every ready
+// prerequisite met.
+func (s *Service) CheckRunnable(t Task) error {
+	if t.Status != StatusReady {
+		return fmt.Errorf("%w: task is %s, not ready", ErrInvalidTransition, t.Status)
+	}
+	if err := s.validateExecution(t.Execution); err != nil {
+		return err
+	}
+	return s.checkReady(&t)
 }
 
 // ApplyEvent writes the effect of a provider event and reports whether a task
