@@ -130,3 +130,40 @@ func isValidation(err error, field string) bool {
 	var ve *ValidationError
 	return errors.As(err, &ve) && ve.Field == field
 }
+
+func TestValidateRepoURL(t *testing.T) {
+	for _, ok := range []string{"https://github.com/org/repo", "https://gitlab.example.com/group/sub/repo.git"} {
+		if err := ValidateRepoURL(ok); err != nil {
+			t.Errorf("ValidateRepoURL(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"",
+		"https://user:token@github.com/org/repo",
+		"https://user@github.com/org/repo",
+		"git@github.com:org/repo.git",
+		"http://github.com/org/repo",
+		"https://github.com",
+		"https://github.com/",
+		"https:///org/repo",
+		"github.com/org/repo",
+		"https://github.com/" + strings.Repeat("a", 500),
+	} {
+		if err := ValidateRepoURL(bad); !isValidation(err, "repo_url") {
+			t.Errorf("ValidateRepoURL(%q) = %v, want validation error", bad, err)
+		}
+	}
+}
+
+func TestValidateBaseBranch(t *testing.T) {
+	for _, ok := range []string{"main", "release/1.x", "feature/ABC-1_x", strings.Repeat("a", 255)} {
+		if err := ValidateBaseBranch(ok); err != nil {
+			t.Errorf("ValidateBaseBranch(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "feature..x", "-x", "/x", "x/", "com espaço", "x~1", strings.Repeat("a", 256)} {
+		if err := ValidateBaseBranch(bad); !isValidation(err, "base_branch") {
+			t.Errorf("ValidateBaseBranch(%q) = %v, want validation error", bad, err)
+		}
+	}
+}
