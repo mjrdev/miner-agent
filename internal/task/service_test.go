@@ -16,7 +16,7 @@ import (
 func newService(t *testing.T) (*task.Service, *tasktest.Repository) {
 	t.Helper()
 	repo := tasktest.NewRepository()
-	return task.NewService(repo, tasktest.Catalog()), repo
+	return task.NewService(repo, tasktest.Catalog(), tasktest.NoRuns()), repo
 }
 
 func TestCreateLocal(t *testing.T) {
@@ -562,4 +562,113 @@ func assertValidation(t *testing.T, err error, field string) {
 	if !errors.As(err, &ve) || ve.Field != field {
 		t.Errorf("error = %v, want validation error on %q", err, field)
 	}
+}
+
+// fakeRuns is a task.RunGuard whose tasks in active have an active run.
+type fakeRuns struct {
+	active    map[uuid.UUID]bool
+	cancelled []uuid.UUID
+}
+
+func (f *fakeRuns) HasActiveRun(_ context.Context, id uuid.UUID) (bool, error) {
+	return f.active[id], nil
+}
+
+func (f *fakeRuns) CancelActiveRun(_ context.Context, id uuid.UUID) error {
+	if f.active[id] {
+		f.cancelled = append(f.cancelled, id)
+		delete(f.active, id)
+	}
+	return nil
+}
+
+func TestTasksWithActiveRun(t *testing.T) {
+	ctx := context.Background()
+	repo := tasktest.NewRepository()
+	runs := &fakeRuns{active: map[uuid.UUID]bool{}}
+	svc := task.NewService(repo, tasktest.Catalog(), runs)
+
+	setup := func(t *testing.T) task.Task {
+		t.Helper()
+		created, err := svc.CreateLocal(ctx, configured(t, svc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The run moves the task to in_progress; the repository is used
+		// directly because users cannot make that transition.
+		got, err := repo.UpdateTask(ctx, created.ID, func(tk *task.Task) error { tk.Status = task.StatusInProgress; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs.active[created.ID] = true
+		return got
+	}
+
+	t.Run("status follows the run", func(t *testing.T) {
+		tk := setup(t)
+		for _, st := range []task.Status{task.StatusFailed, task.StatusReady, task.StatusInProgress} {
+			if _, err := svc.Update(ctx, tk.ID, task.UpdateInput{Status: new(st)}); !errors.Is(err, task.ErrConflict) {
+				t.Errorf("-> %s = %v, want ErrConflict", st, err)
+			}
+		}
+		got, err := svc.Update(ctx, tk.ID, task.UpdateInput{Labels: &[]string{"urgente"}})
+		if err != nil || got.Status != task.StatusInProgress || !slices.Equal(got.Labels, []string{"urgente"}) {
+			t.Errorf("label edit = %+v, %v", got, err)
+		}
+	})
+
+	t.Run("cancelling the task cancels the run", func(t *testing.T) {
+		tk := setup(t)
+		got, err := svc.Update(ctx, tk.ID, task.UpdateInput{Status: new(task.StatusCancelled)})
+		if err != nil || got.Status != task.StatusCancelled {
+			t.Fatalf("cancel = %+v, %v", got, err)
+		}
+		if !slices.Contains(runs.cancelled, tk.ID) {
+			t.Error("active run not cancelled")
+		}
+	})
+
+	t.Run("delete is refused", func(t *testing.T) {
+		tk := setup(t)
+		if err := svc.Delete(ctx, tk.ID); !errors.Is(err, task.ErrConflict) {
+			t.Errorf("delete = %v, want ErrConflict", err)
+		}
+		delete(runs.active, tk.ID)
+		if err := svc.Delete(ctx, tk.ID); err != nil {
+			t.Errorf("delete without active run = %v", err)
+		}
+	})
+
+	t.Run("in_progress back to ready without active run", func(t *testing.T) {
+		tk := setup(t)
+		delete(runs.active, tk.ID)
+		got, err := svc.Update(ctx, tk.ID, task.UpdateInput{Status: new(task.StatusReady)})
+		if err != nil || got.Status != task.StatusReady {
+			t.Errorf("in_progress -> ready = %+v, %v", got, err)
+		}
+	})
+}
+
+func TestCheckRunnable(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newService(t)
+	created, _ := svc.CreateLocal(ctx, configured(t, svc))
+
+	if err := svc.CheckRunnable(created); !errors.Is(err, task.ErrInvalidTransition) {
+		t.Errorf("draft task = %v, want ErrInvalidTransition", err)
+	}
+	ready, err := svc.Update(ctx, created.ID, task.UpdateInput{Status: new(task.StatusReady)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckRunnable(ready); err != nil {
+		t.Errorf("ready task = %v", err)
+	}
+
+	// A model removed from the catalog after the task became ready.
+	stale, _ := repo.UpdateTask(ctx, ready.ID, func(tk *task.Task) error { tk.Execution.Model = new("retired"); return nil })
+	assertValidation(t, svc.CheckRunnable(stale), "model")
+
+	stale.Execution.Model, stale.ProjectCategory = new("opus"), nil
+	assertValidation(t, svc.CheckRunnable(stale), "status")
 }

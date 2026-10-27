@@ -15,6 +15,12 @@ type fakeAgent struct {
 func (a fakeAgent) Name() string              { return a.name }
 func (a fakeAgent) Models() []execution.Model { return a.models }
 
+func (fakeAgent) Command(execution.Invocation) []string { return nil }
+
+func (fakeAgent) Credential(func(string) string) (execution.Credential, bool) {
+	return execution.Credential{}, false
+}
+
 func TestCatalog(t *testing.T) {
 	zeta := fakeAgent{name: "zeta", models: []execution.Model{{ID: "b"}, {ID: "a", Efforts: []string{"high", "low"}}}}
 	alpha := fakeAgent{name: "alpha", models: []execution.Model{{ID: "m"}}}
